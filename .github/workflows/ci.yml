@@ -44,17 +44,17 @@ jobs:
           fi
 
       - name: Build
-        run: cmake --build build --config Release --target NozzleReceiverPlugin_All
+        run: cmake --build build --config Release --target NozzleReceiverPlugin_All NozzleSenderStandalone NozzleReceiverStandalone NozzleStandaloneSmoke
 
       - name: Verify macOS universal plugin binaries
         if: runner.os == 'macOS'
         shell: bash
         run: |
           binaries_file="build/macos-binaries.txt"
-          find build -path '*/Nozzle Receiver.app/Contents/MacOS/Nozzle Receiver' -o -path '*/Nozzle Receiver.vst3/Contents/MacOS/Nozzle Receiver' -o -path '*/Nozzle Receiver.component/Contents/MacOS/Nozzle Receiver' | sort > "$binaries_file"
+          find build -path '*/Nozzle Receiver.app/Contents/MacOS/Nozzle Receiver' -o -path '*/Nozzle Receiver.vst3/Contents/MacOS/Nozzle Receiver' -o -path '*/Nozzle Receiver.component/Contents/MacOS/Nozzle Receiver' -o -path '*/Nozzle Sender Standalone.app/Contents/MacOS/Nozzle Sender Standalone' -o -path '*/Nozzle Receiver Standalone.app/Contents/MacOS/Nozzle Receiver Standalone' | sort > "$binaries_file"
           binary_count=$(wc -l < "$binaries_file" | tr -d ' ')
-          if [ "$binary_count" -ne 3 ]; then
-            echo "Expected 3 macOS binaries, found ${binary_count}" >&2
+          if [ "$binary_count" -ne 5 ]; then
+            echo "Expected 5 macOS binaries, found ${binary_count}" >&2
             cat "$binaries_file" >&2
             exit 1
           fi

@@ -6,6 +6,8 @@ import zipfile
 from pathlib import Path
 
 PLUGIN_NAME = "Nozzle Receiver"
+SENDER_STANDALONE_NAME = "Nozzle Sender Standalone"
+RECEIVER_STANDALONE_NAME = "Nozzle Receiver Standalone"
 
 
 def copy_tree(source: Path, target: Path) -> None:
@@ -21,14 +23,14 @@ def find_one(root: Path, pattern: str) -> Path:
     return matches[0]
 
 
-def find_standalone(root: Path, platform: str) -> Path:
+def find_standalone(root: Path, product_name: str, platform: str) -> Path:
     if platform == "macos-universal":
-        return find_one(root, f"{PLUGIN_NAME}.app")
+        return find_one(root, f"{product_name}.app")
     if platform == "windows-x64":
-        return find_one(root, f"{PLUGIN_NAME}.exe")
-    matches = [path for path in root.rglob(PLUGIN_NAME) if path.is_file()]
+        return find_one(root, f"{product_name}.exe")
+    matches = [path for path in root.rglob(product_name) if path.is_file()]
     if not matches:
-        raise SystemExit(f"missing standalone executable {PLUGIN_NAME} under {root}")
+        raise SystemExit(f"missing standalone executable {product_name} under {root}")
     return sorted(matches)[0]
 
 
@@ -70,7 +72,10 @@ def main() -> int:
     copy_artifact(find_one(build_dir, f"{PLUGIN_NAME}.vst3"), plugin_dir)
     if args.platform == "macos-universal":
         copy_artifact(find_one(build_dir, f"{PLUGIN_NAME}.component"), plugin_dir)
-    copy_artifact(find_standalone(build_dir, args.platform), standalone_dir)
+
+    copy_artifact(find_standalone(build_dir, PLUGIN_NAME, args.platform), standalone_dir)
+    copy_artifact(find_standalone(build_dir, SENDER_STANDALONE_NAME, args.platform), standalone_dir)
+    copy_artifact(find_standalone(build_dir, RECEIVER_STANDALONE_NAME, args.platform), standalone_dir)
 
     for name in ["README.md", "LICENSE", "THIRD-PARTY-NOTICES.md"]:
         shutil.copy2(name, package_root / name)

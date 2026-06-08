@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace juce_nozzle {
@@ -41,6 +42,7 @@ private:
     void *receiver_{nullptr};
     std::string sender_name_;
     std::string application_name_;
+    std::thread::id allowed_thread_{};
     std::string last_error_;
 };
 

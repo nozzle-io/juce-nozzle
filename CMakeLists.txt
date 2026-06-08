@@ -31,6 +31,7 @@ FetchContent_MakeAvailable(JUCE)
 
 add_library(juce_nozzle STATIC
     src/juce_nozzle_receiver.cpp
+    src/juce_nozzle_sender.cpp
 )
 target_include_directories(juce_nozzle PUBLIC include)
 target_link_libraries(juce_nozzle PUBLIC nozzle)
@@ -81,6 +82,66 @@ if(JUCE_NOZZLE_BUILD_EXAMPLES)
         juce::juce_gui_extra
     )
     target_compile_options(NozzleReceiverPlugin PRIVATE
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    )
+
+    add_executable(NozzleStandaloneSmoke
+        tests/standalone_smoke.cpp
+    )
+    target_link_libraries(NozzleStandaloneSmoke PRIVATE
+        juce_nozzle
+    )
+    target_compile_options(NozzleStandaloneSmoke PRIVATE
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    )
+
+    juce_add_gui_app(NozzleSenderStandalone
+        PRODUCT_NAME "Nozzle Sender Standalone"
+        COMPANY_NAME "nozzle contributors"
+        COMPANY_WEBSITE "https://github.com/nozzle-io/juce-nozzle"
+        BUNDLE_ID "org.nozzle-io.juce.sender-standalone"
+    )
+    juce_generate_juce_header(NozzleSenderStandalone)
+    target_sources(NozzleSenderStandalone PRIVATE
+        examples/NozzleSenderStandalone/Main.cpp
+    )
+    target_compile_definitions(NozzleSenderStandalone PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
+    target_link_libraries(NozzleSenderStandalone PRIVATE
+        juce_nozzle
+        juce::juce_gui_extra
+    )
+    target_compile_options(NozzleSenderStandalone PRIVATE
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    )
+
+    juce_add_gui_app(NozzleReceiverStandalone
+        PRODUCT_NAME "Nozzle Receiver Standalone"
+        COMPANY_NAME "nozzle contributors"
+        COMPANY_WEBSITE "https://github.com/nozzle-io/juce-nozzle"
+        BUNDLE_ID "org.nozzle-io.juce.receiver-standalone"
+    )
+    juce_generate_juce_header(NozzleReceiverStandalone)
+    target_sources(NozzleReceiverStandalone PRIVATE
+        examples/NozzleReceiverStandalone/Main.cpp
+    )
+    target_compile_definitions(NozzleReceiverStandalone PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
+    target_link_libraries(NozzleReceiverStandalone PRIVATE
+        juce_nozzle
+        juce::juce_gui_extra
+    )
+    target_compile_options(NozzleReceiverStandalone PRIVATE
         $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wall -Wextra -Wpedantic>
         $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Wpedantic>
         $<$<CXX_COMPILER_ID:MSVC>:/W4>

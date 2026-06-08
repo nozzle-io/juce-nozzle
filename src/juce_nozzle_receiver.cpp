@@ -65,6 +65,7 @@ bool receiver_client::connect(const std::string &sender_name, const std::string 
     }
 
     receiver_ = created_receiver;
+    allowed_thread_ = std::this_thread::get_id();
     last_error_ = "receiver connected";
     return true;
 }
@@ -73,6 +74,7 @@ void receiver_client::disconnect() {
     if(receiver_ != nullptr) {
         nozzle_receiver_destroy((NozzleReceiver *)receiver_);
         receiver_ = nullptr;
+        allowed_thread_ = std::thread::id{};
     }
 }
 
@@ -80,6 +82,12 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
     receiver_poll_result result{};
     if(receiver_ == nullptr) {
         result.status = "receiver is not connected";
+        last_error_ = result.status;
+        return result;
+    }
+    if(allowed_thread_ != std::thread::id{} && std::this_thread::get_id() != allowed_thread_) {
+        result.connected = true;
+        result.status = "receiver poll rejected: call from the thread that created the receiver; never call from processBlock()";
         last_error_ = result.status;
         return result;
     }
