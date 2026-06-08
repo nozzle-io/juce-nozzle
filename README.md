@@ -47,11 +47,21 @@ Nozzle calls must not run on an audio callback thread. The example enforces this
 - receiver creation, acquire, copy, and destruction happen from the editor/message-thread timer;
 - standalone sender publish happens from the message-thread timer;
 - helper clients support an explicit `juce_nozzle::thread_policy`;
-- the standalone/plugin UI paths pass a JUCE message-thread policy, so create/connect, poll/publish, and disconnect/destroy are rejected if called outside the message thread;
-- the default low-level helper policy remains owner-thread based for non-GUI smoke code, but reusable JUCE UI/plugin code should use the message-thread policy instead of calling nozzle work directly;
+- the standalone/plugin UI paths pass the reusable `juce_nozzle::juce_message_thread_policy()`, so create/connect, poll/publish, and disconnect are rejected if called outside the message thread;
+- the default low-level helper policy remains owner-thread based for non-GUI smoke/test code only; if first used from an audio callback it will still treat that callback thread as the owner, so JUCE UI/plugin code must not use the default constructor as an audio-thread safety boundary;
+- the helper object is not thread-safe. Thread policy rejection is a guardrail, not synchronization; do not call `connect()`, `disconnect()`, `poll()`, `publish_test_pattern()`, `is_connected()`, or destructors concurrently on the same helper;
 - closing the editor or standalone window destroys the receiver/sender.
 
-If a policy rejects a call, the helper returns `false` or a result with `published=false`/`has_frame=false` plus an explicit diagnostic such as `sender connect rejected` or `receiver poll rejected`. It does not throw. Destructors also respect the policy; callers should disconnect on the owning/message thread before destroying helper objects.
+If a policy rejects a normal call, the helper returns `false` or a result with `published=false`/`has_frame=false` plus an explicit diagnostic such as `sender connect rejected` or `receiver poll rejected`. It does not throw. This rejection path is a misuse diagnostic, not a real-time-safe audio callback API: it may update diagnostic strings and lock helper-owned diagnostic state.
+
+Destructor contract is deliberately stricter:
+
+- connected helpers must be explicitly disconnected on the owning/message thread before destruction;
+- destructors do not call the fallible public `disconnect()` path and silently ignore the result;
+- if a connected helper is destroyed from a rejected context, the helper emits a hard diagnostic and triggers the policy violation callback;
+- policies may provide a `rejected_destroy` callback to marshal the raw nozzle resource destruction back to the allowed context. The callback must return `true` only after destruction completed or ownership was safely transferred. If no callback exists, or if the callback fails, the destructor aborts instead of silently leaking the resource. `juce_message_thread_policy()` uses this to queue rejected teardown onto the JUCE message thread, but plugin-host unload/runtime support still requires separate host smoke evidence.
+
+That contract is intentionally uncomfortable: a helper that survives until wrong-thread destruction is already a lifecycle bug. Hiding it would make the audio-thread boundary fake.
 
 This is still an experimental plugin-host sample. Host-specific smoke is required before claiming runtime support for a DAW.
 

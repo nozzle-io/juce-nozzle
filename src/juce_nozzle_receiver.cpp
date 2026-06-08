@@ -2,8 +2,12 @@
 
 #include <nozzle/nozzle_c.h>
 
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace juce_nozzle {
@@ -34,6 +38,12 @@ std::string status_with_error(const char *prefix, NozzleErrorCode error) {
     return stream.str();
 }
 
+void destroy_receiver_resource(void *resource) {
+    if(resource != nullptr) {
+        nozzle_receiver_destroy((NozzleReceiver *)resource);
+    }
+}
+
 uint64_t rgba8_size(uint32_t width, uint32_t height) {
     if(width == 0 || height == 0) return 0;
     const uint64_t pixel_count = (uint64_t)width * height;
@@ -60,7 +70,29 @@ receiver_client::receiver_client(thread_policy policy)
 {}
 
 receiver_client::~receiver_client() {
-    disconnect();
+    if(receiver_ == nullptr) return;
+
+    if(thread_policy_.allows_current_thread(allowed_thread_)) {
+        destroy_connected_receiver();
+        return;
+    }
+
+    const char *diagnostic = "receiver destructor rejected: connected helper destroyed outside the required thread context; call disconnect() on the allowed thread before destruction";
+    std::fprintf(stderr, "juce_nozzle: receiver destructor: %s\n", diagnostic);
+    report_thread_violation("receiver destructor", diagnostic);
+
+    if(thread_policy_.rejected_destroy != nullptr) {
+        const bool ownership_transferred = thread_policy_.rejected_destroy("receiver destructor", receiver_, destroy_receiver_resource, thread_policy_.rejected_destroy_user_data);
+        if(ownership_transferred) {
+            receiver_ = nullptr;
+            allowed_thread_ = std::thread::id{};
+            return;
+        }
+    }
+
+    std::fprintf(stderr, "juce_nozzle: receiver destructor: aborting because connected receiver destruction was rejected and no safe destroy handoff succeeded\n");
+    assert(false && "receiver_client destroyed while connected from a disallowed thread; call disconnect() on the allowed thread before destruction");
+    std::abort();
 }
 
 bool receiver_client::validate_thread(const char *operation) {
@@ -69,8 +101,29 @@ bool receiver_client::validate_thread(const char *operation) {
     const char *required_context = thread_policy_.required_context != nullptr ? thread_policy_.required_context : "required thread context";
     std::ostringstream stream;
     stream << operation << " rejected: call from " << required_context << "; never call nozzle APIs from processBlock()";
-    last_error_ = stream.str();
+    const std::string message = stream.str();
+    set_last_error(message);
+    report_thread_violation(operation, message.c_str());
     return false;
+}
+
+void receiver_client::report_thread_violation(const char *operation, const char *diagnostic) {
+    const char *safe_operation = operation != nullptr ? operation : "receiver operation";
+    const char *safe_diagnostic = diagnostic != nullptr ? diagnostic : "receiver thread policy rejected the operation";
+    if(thread_policy_.violation_report != nullptr) {
+        thread_policy_.violation_report(safe_operation, safe_diagnostic, thread_policy_.violation_user_data);
+    }
+}
+
+void receiver_client::destroy_connected_receiver() {
+    nozzle_receiver_destroy((NozzleReceiver *)receiver_);
+    receiver_ = nullptr;
+    allowed_thread_ = std::thread::id{};
+}
+
+void receiver_client::set_last_error(std::string message) {
+    std::lock_guard<std::mutex> lock(last_error_mutex_);
+    last_error_ = std::move(message);
 }
 
 bool receiver_client::connect(const std::string &sender_name, const std::string &application_name) {
@@ -87,14 +140,14 @@ bool receiver_client::connect(const std::string &sender_name, const std::string 
     NozzleReceiver *created_receiver = nullptr;
     const NozzleErrorCode error = nozzle_receiver_create(&desc, &created_receiver);
     if(error != NOZZLE_OK || created_receiver == nullptr) {
-        last_error_ = status_with_error("receiver_create failed", error);
+        set_last_error(status_with_error("receiver_create failed", error));
         receiver_ = nullptr;
         return false;
     }
 
     receiver_ = created_receiver;
     allowed_thread_ = std::this_thread::get_id();
-    last_error_ = "receiver connected";
+    set_last_error("receiver connected");
     return true;
 }
 
@@ -102,10 +155,8 @@ bool receiver_client::disconnect() {
     if(receiver_ == nullptr) return true;
     if(!validate_thread("receiver disconnect")) return false;
 
-    nozzle_receiver_destroy((NozzleReceiver *)receiver_);
-    receiver_ = nullptr;
-    allowed_thread_ = std::thread::id{};
-    last_error_ = "receiver disconnected";
+    destroy_connected_receiver();
+    set_last_error("receiver disconnected");
     return true;
 }
 
@@ -113,13 +164,12 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
     receiver_poll_result result{};
     if(receiver_ == nullptr) {
         result.status = "receiver is not connected";
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
     if(!validate_thread("receiver poll")) {
         result.connected = true;
-        result.status = last_error_;
-        last_error_ = result.status;
+        result.status = last_error();
         return result;
     }
 
@@ -129,12 +179,12 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
     const NozzleErrorCode acquire_error = nozzle_receiver_acquire_frame((NozzleReceiver *)receiver_, &acquire_desc, &frame);
     if(acquire_error == NOZZLE_ERROR_TIMEOUT || acquire_error == NOZZLE_ERROR_SENDER_NOT_FOUND) {
         result.status = status_with_error("waiting for frame", acquire_error);
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
     if(acquire_error != NOZZLE_OK || frame == nullptr) {
         result.status = status_with_error("acquire_frame failed", acquire_error);
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
 
@@ -143,7 +193,7 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
     if(info_error != NOZZLE_OK) {
         nozzle_frame_release(frame);
         result.status = status_with_error("frame_get_info failed", info_error);
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
 
@@ -151,14 +201,14 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
         nozzle_frame_release(frame);
         result.connected = true;
         result.status = "unsupported source semantic format; sample receiver accepts rgba8_unorm only";
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
     if(frame_info.format != NOZZLE_FORMAT_RGBA8_UNORM && frame_info.format != NOZZLE_FORMAT_BGRA8_UNORM) {
         nozzle_frame_release(frame);
         result.connected = true;
         result.status = "unsupported source storage format; sample receiver accepts rgba8_unorm/bgra8_unorm storage only";
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
 
@@ -167,7 +217,7 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
         nozzle_frame_release(frame);
         result.connected = true;
         result.status = "invalid or oversized frame dimensions";
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
 
@@ -190,7 +240,7 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
         result.frame = receiver_frame{};
         result.connected = true;
         result.status = status_with_error("copy_pixels failed", copy_error);
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
     if(copied_pixels.format == NOZZLE_FORMAT_BGRA8_UNORM) {
@@ -206,7 +256,7 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
     result.has_frame = true;
     result.connected = true;
     result.status = "frame received";
-    last_error_ = result.status;
+    set_last_error(result.status);
     return result;
 }
 
@@ -215,6 +265,7 @@ bool receiver_client::is_connected() const {
 }
 
 std::string receiver_client::last_error() const {
+    std::lock_guard<std::mutex> lock(last_error_mutex_);
     return last_error_;
 }
 

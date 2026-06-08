@@ -42,6 +42,13 @@ target_compile_options(juce_nozzle PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 
+add_library(juce_nozzle_juce_policy INTERFACE)
+target_link_libraries(juce_nozzle_juce_policy INTERFACE
+    juce_nozzle
+    juce::juce_events
+)
+target_include_directories(juce_nozzle_juce_policy INTERFACE include)
+
 if(JUCE_NOZZLE_BUILD_EXAMPLES)
     if(APPLE)
         set(JUCE_NOZZLE_PLUGIN_FORMATS Standalone VST3 AU)
@@ -77,7 +84,7 @@ if(JUCE_NOZZLE_BUILD_EXAMPLES)
         JUCE_VST3_CAN_REPLACE_VST2=0
     )
     target_link_libraries(NozzleReceiverPlugin PRIVATE
-        juce_nozzle
+        juce_nozzle_juce_policy
         juce::juce_audio_utils
         juce::juce_gui_extra
     )
@@ -114,7 +121,7 @@ if(JUCE_NOZZLE_BUILD_EXAMPLES)
         JUCE_USE_CURL=0
     )
     target_link_libraries(NozzleSenderStandalone PRIVATE
-        juce_nozzle
+        juce_nozzle_juce_policy
         juce::juce_gui_extra
     )
     target_compile_options(NozzleSenderStandalone PRIVATE
@@ -138,7 +145,7 @@ if(JUCE_NOZZLE_BUILD_EXAMPLES)
         JUCE_USE_CURL=0
     )
     target_link_libraries(NozzleReceiverStandalone PRIVATE
-        juce_nozzle
+        juce_nozzle_juce_policy
         juce::juce_gui_extra
     )
     target_compile_options(NozzleReceiverStandalone PRIVATE

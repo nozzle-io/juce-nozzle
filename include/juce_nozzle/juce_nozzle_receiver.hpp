@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,6 +28,11 @@ struct receiver_poll_result {
 
 class receiver_client {
 public:
+    // Low-level/test policy: the first successful connect() owner thread becomes
+    // the only allowed thread. This is not an audio-thread safety boundary for
+    // JUCE UI/plugin code; use juce_message_thread_policy() there. This helper
+    // is not a synchronization primitive; concurrent calls on one object are
+    // unsupported.
     receiver_client();
     explicit receiver_client(thread_policy policy);
     receiver_client(const receiver_client &) = delete;
@@ -43,12 +49,16 @@ public:
 
 private:
     bool validate_thread(const char *operation);
+    void report_thread_violation(const char *operation, const char *diagnostic);
+    void destroy_connected_receiver();
+    void set_last_error(std::string message);
 
     void *receiver_{nullptr};
     std::string sender_name_;
     std::string application_name_;
     std::thread::id allowed_thread_{};
     thread_policy thread_policy_{};
+    mutable std::mutex last_error_mutex_;
     std::string last_error_;
 };
 

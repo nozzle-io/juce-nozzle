@@ -1,18 +1,8 @@
 #include "PluginEditor.hpp"
 
+#include <juce_nozzle/juce_thread_policy.hpp>
+
 namespace {
-
-bool is_juce_message_thread(void *user_data) {
-    juce::ignoreUnused(user_data);
-    return juce::MessageManager::getInstance()->isThisTheMessageThread();
-}
-
-juce_nozzle::thread_policy juce_message_thread_policy() {
-    juce_nozzle::thread_policy policy;
-    policy.required_context = "JUCE message thread";
-    policy.is_allowed = is_juce_message_thread;
-    return policy;
-}
 
 juce::Image rgba8_to_image(const juce_nozzle::receiver_frame &frame) {
     juce::Image image(juce::Image::ARGB, (int)frame.width, (int)frame.height, true);
@@ -117,7 +107,7 @@ void NozzleReceiverAudioProcessorEditor::timerCallback() {
 
 void NozzleReceiverAudioProcessorEditor::connect_receiver() {
     processor_.set_source_name(source_name_editor_.getText());
-    receiver_ = std::make_unique<juce_nozzle::receiver_client>(juce_message_thread_policy());
+    receiver_ = std::make_unique<juce_nozzle::receiver_client>(juce_nozzle::juce_message_thread_policy());
     observed_frames_ = 0;
     preview_image_ = {};
     const bool connected = receiver_->connect(processor_.source_name().toStdString(), "juce-nozzle receiver plugin");

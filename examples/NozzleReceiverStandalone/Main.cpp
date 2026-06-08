@@ -1,22 +1,12 @@
 #include <JuceHeader.h>
 #include <juce_nozzle/juce_nozzle_receiver.hpp>
+#include <juce_nozzle/juce_thread_policy.hpp>
 
 #include <cstdio>
 #include <string>
 
 namespace {
 
-bool is_juce_message_thread(void *user_data) {
-    juce::ignoreUnused(user_data);
-    return juce::MessageManager::getInstance()->isThisTheMessageThread();
-}
-
-juce_nozzle::thread_policy juce_message_thread_policy() {
-    juce_nozzle::thread_policy policy;
-    policy.required_context = "JUCE message thread";
-    policy.is_allowed = is_juce_message_thread;
-    return policy;
-}
 
 struct smoke_receiver_options {
     bool enabled{false};
@@ -76,7 +66,7 @@ bool verify_corners(const juce_nozzle::receiver_frame &frame) {
 int run_smoke_receiver(const smoke_receiver_options &options) {
     const uint32_t poll_ms = 100u;
     uint32_t waited_ms = 0u;
-    juce_nozzle::receiver_client receiver;
+    juce_nozzle::receiver_client receiver(juce_nozzle::juce_message_thread_policy());
 
     while(!receiver.is_connected() && waited_ms < options.timeout_ms) {
         if(receiver.connect(options.source_name, "juce-nozzle receiver standalone smoke")) break;
@@ -197,7 +187,7 @@ private:
             status_label_.setText("Source name is empty.", juce::dontSendNotification);
             return;
         }
-        receiver_ = std::make_unique<juce_nozzle::receiver_client>(juce_message_thread_policy());
+        receiver_ = std::make_unique<juce_nozzle::receiver_client>(juce_nozzle::juce_message_thread_policy());
         observed_frames_ = 0;
         preview_image_ = {};
         const bool connected = receiver_->connect(source_name.toStdString(), "juce-nozzle receiver standalone");

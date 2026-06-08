@@ -1,22 +1,12 @@
 #include <JuceHeader.h>
 #include <juce_nozzle/juce_nozzle_sender.hpp>
+#include <juce_nozzle/juce_thread_policy.hpp>
 
 #include <cstdio>
 #include <string>
 
 namespace {
 
-bool is_juce_message_thread(void *user_data) {
-    juce::ignoreUnused(user_data);
-    return juce::MessageManager::getInstance()->isThisTheMessageThread();
-}
-
-juce_nozzle::thread_policy juce_message_thread_policy() {
-    juce_nozzle::thread_policy policy;
-    policy.required_context = "JUCE message thread";
-    policy.is_allowed = is_juce_message_thread;
-    return policy;
-}
 
 struct smoke_sender_options {
     bool enabled{false};
@@ -56,7 +46,7 @@ smoke_sender_options parse_smoke_sender_options(const juce::String &command_line
 }
 
 int run_smoke_sender(const smoke_sender_options &options) {
-    juce_nozzle::sender_client sender;
+    juce_nozzle::sender_client sender(juce_nozzle::juce_message_thread_policy());
     if(!sender.connect(options.source_name, "juce-nozzle sender standalone smoke")) {
         std::fprintf(stderr, "standalone app sender smoke connect failed: %s\n", sender.last_error().c_str());
         return 1;
@@ -160,7 +150,7 @@ private:
             return;
         }
 
-        sender_ = std::make_unique<juce_nozzle::sender_client>(juce_message_thread_policy());
+        sender_ = std::make_unique<juce_nozzle::sender_client>(juce_nozzle::juce_message_thread_policy());
         if(!sender_->connect(source_name.toStdString(), "juce-nozzle sender standalone")) {
             status_label_.setText(sender_->last_error(), juce::dontSendNotification);
             sender_.reset();

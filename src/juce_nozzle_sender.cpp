@@ -2,10 +2,14 @@
 
 #include <nozzle/nozzle_c.h>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstdio>
 #include <limits>
 #include <sstream>
+#include <utility>
 
 namespace juce_nozzle {
 namespace {
@@ -33,6 +37,12 @@ std::string status_with_error(const char *prefix, NozzleErrorCode error) {
     std::ostringstream stream;
     stream << prefix << ": " << error_name(error) << " (" << (int)error << ")";
     return stream.str();
+}
+
+void destroy_sender_resource(void *resource) {
+    if(resource != nullptr) {
+        nozzle_sender_destroy((NozzleSender *)resource);
+    }
 }
 
 uint8_t scaled_channel(uint32_t value, uint32_t maximum) {
@@ -123,7 +133,29 @@ sender_client::sender_client(thread_policy policy)
 {}
 
 sender_client::~sender_client() {
-    disconnect();
+    if(sender_ == nullptr) return;
+
+    if(thread_policy_.allows_current_thread(allowed_thread_)) {
+        destroy_connected_sender();
+        return;
+    }
+
+    const char *diagnostic = "sender destructor rejected: connected helper destroyed outside the required thread context; call disconnect() on the allowed thread before destruction";
+    std::fprintf(stderr, "juce_nozzle: sender destructor: %s\n", diagnostic);
+    report_thread_violation("sender destructor", diagnostic);
+
+    if(thread_policy_.rejected_destroy != nullptr) {
+        const bool ownership_transferred = thread_policy_.rejected_destroy("sender destructor", sender_, destroy_sender_resource, thread_policy_.rejected_destroy_user_data);
+        if(ownership_transferred) {
+            sender_ = nullptr;
+            allowed_thread_ = std::thread::id{};
+            return;
+        }
+    }
+
+    std::fprintf(stderr, "juce_nozzle: sender destructor: aborting because connected sender destruction was rejected and no safe destroy handoff succeeded\n");
+    assert(false && "sender_client destroyed while connected from a disallowed thread; call disconnect() on the allowed thread before destruction");
+    std::abort();
 }
 
 bool sender_client::validate_thread(const char *operation) {
@@ -132,8 +164,29 @@ bool sender_client::validate_thread(const char *operation) {
     const char *required_context = thread_policy_.required_context != nullptr ? thread_policy_.required_context : "required thread context";
     std::ostringstream stream;
     stream << operation << " rejected: call from " << required_context << "; never call nozzle APIs from processBlock()";
-    last_error_ = stream.str();
+    const std::string message = stream.str();
+    set_last_error(message);
+    report_thread_violation(operation, message.c_str());
     return false;
+}
+
+void sender_client::report_thread_violation(const char *operation, const char *diagnostic) {
+    const char *safe_operation = operation != nullptr ? operation : "sender operation";
+    const char *safe_diagnostic = diagnostic != nullptr ? diagnostic : "sender thread policy rejected the operation";
+    if(thread_policy_.violation_report != nullptr) {
+        thread_policy_.violation_report(safe_operation, safe_diagnostic, thread_policy_.violation_user_data);
+    }
+}
+
+void sender_client::destroy_connected_sender() {
+    nozzle_sender_destroy((NozzleSender *)sender_);
+    sender_ = nullptr;
+    allowed_thread_ = std::thread::id{};
+}
+
+void sender_client::set_last_error(std::string message) {
+    std::lock_guard<std::mutex> lock(last_error_mutex_);
+    last_error_ = std::move(message);
 }
 
 bool sender_client::connect(const std::string &sender_name, const std::string &application_name) {
@@ -153,14 +206,14 @@ bool sender_client::connect(const std::string &sender_name, const std::string &a
     NozzleSender *created_sender = nullptr;
     const NozzleErrorCode error = nozzle_sender_create(&desc, &created_sender);
     if(error != NOZZLE_OK || created_sender == nullptr) {
-        last_error_ = status_with_error("sender_create failed", error);
+        set_last_error(status_with_error("sender_create failed", error));
         sender_ = nullptr;
         return false;
     }
 
     sender_ = created_sender;
     allowed_thread_ = std::this_thread::get_id();
-    last_error_ = "sender connected";
+    set_last_error("sender connected");
     return true;
 }
 
@@ -168,10 +221,8 @@ bool sender_client::disconnect() {
     if(sender_ == nullptr) return true;
     if(!validate_thread("sender disconnect")) return false;
 
-    nozzle_sender_destroy((NozzleSender *)sender_);
-    sender_ = nullptr;
-    allowed_thread_ = std::thread::id{};
-    last_error_ = "sender disconnected";
+    destroy_connected_sender();
+    set_last_error("sender disconnected");
     return true;
 }
 
@@ -179,17 +230,16 @@ sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32
     sender_publish_result result{};
     if(sender_ == nullptr) {
         result.status = "sender is not connected";
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
     if(!validate_thread("sender publish")) {
-        result.status = last_error_;
-        last_error_ = result.status;
+        result.status = last_error();
         return result;
     }
     if(width == 0 || height == 0) {
         result.status = "invalid sender dimensions";
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
 
@@ -197,7 +247,7 @@ sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32
     NozzleErrorCode error = nozzle_sender_acquire_writable_frame((NozzleSender *)sender_, width, height, NOZZLE_FORMAT_RGBA8_UNORM, &frame);
     if(error != NOZZLE_OK || frame == nullptr) {
         result.status = status_with_error("acquire_writable_frame failed", error);
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
 
@@ -215,7 +265,7 @@ sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32
         nozzle_sender_discard_frame((NozzleSender *)sender_, frame);
         nozzle_frame_release(frame);
         result.status = status_with_error("write_test_pattern failed", error);
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
 
@@ -223,7 +273,7 @@ sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32
     nozzle_frame_release(frame);
     if(error != NOZZLE_OK) {
         result.status = status_with_error("commit_frame failed", error);
-        last_error_ = result.status;
+        set_last_error(result.status);
         return result;
     }
 
@@ -231,7 +281,7 @@ sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32
     result.frame_index = frame_counter_;
     frame_counter_ += 1u;
     result.status = "frame published";
-    last_error_ = result.status;
+    set_last_error(result.status);
     return result;
 }
 
@@ -240,6 +290,7 @@ bool sender_client::is_connected() const {
 }
 
 std::string sender_client::last_error() const {
+    std::lock_guard<std::mutex> lock(last_error_mutex_);
     return last_error_;
 }
 

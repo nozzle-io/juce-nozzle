@@ -20,6 +20,42 @@ juce_nozzle::thread_policy denied_policy() {
     return policy;
 }
 
+struct lifecycle_violation_capture {
+    int violation_count{0};
+    int rejected_destroy_count{0};
+    std::string operation;
+    std::string diagnostic;
+    void *resource{nullptr};
+    juce_nozzle::thread_policy_destroy_resource destroy_resource{nullptr};
+};
+
+void capture_violation(const char *operation, const char *diagnostic, void *user_data) {
+    lifecycle_violation_capture *capture = (lifecycle_violation_capture *)user_data;
+    if(capture == nullptr) return;
+    capture->violation_count += 1;
+    capture->operation = operation != nullptr ? operation : "";
+    capture->diagnostic = diagnostic != nullptr ? diagnostic : "";
+}
+
+bool capture_rejected_destroy(const char *operation, void *resource, juce_nozzle::thread_policy_destroy_resource destroy_resource, void *user_data) {
+    lifecycle_violation_capture *capture = (lifecycle_violation_capture *)user_data;
+    if(capture == nullptr) return false;
+    capture->rejected_destroy_count += 1;
+    capture->operation = operation != nullptr ? operation : "";
+    capture->resource = resource;
+    capture->destroy_resource = destroy_resource;
+    return resource != nullptr && destroy_resource != nullptr;
+}
+
+juce_nozzle::thread_policy captured_owner_thread_policy(lifecycle_violation_capture *capture) {
+    juce_nozzle::thread_policy policy = juce_nozzle::owner_thread_policy();
+    policy.violation_report = capture_violation;
+    policy.violation_user_data = capture;
+    policy.rejected_destroy = capture_rejected_destroy;
+    policy.rejected_destroy_user_data = capture;
+    return policy;
+}
+
 bool contains_text(const std::string &text, const char *needle) {
     return text.find(needle) != std::string::npos;
 }
@@ -52,7 +88,7 @@ bool verify_policy_rejects_create() {
 
 bool verify_disconnect_rejects_wrong_thread() {
     const std::string source_name = "juce_nozzle_disconnect_policy";
-    juce_nozzle::sender_client sender;
+    juce_nozzle::sender_client sender(juce_nozzle::owner_thread_policy());
     if(!sender.connect(source_name, "juce-nozzle disconnect policy sender")) {
         std::fprintf(stderr, "sender connect failed for disconnect policy test: %s\n", sender.last_error().c_str());
         return false;
@@ -89,6 +125,190 @@ bool verify_disconnect_rejects_wrong_thread() {
     return true;
 }
 
+bool verify_frame_operations_reject_wrong_thread() {
+    const std::string source_name = "juce_nozzle_frame_policy";
+    juce_nozzle::sender_client sender(juce_nozzle::owner_thread_policy());
+    if(!sender.connect(source_name, "juce-nozzle frame policy sender")) {
+        std::fprintf(stderr, "sender connect failed for frame policy test: %s\n", sender.last_error().c_str());
+        return false;
+    }
+
+    juce_nozzle::sender_publish_result publish_result;
+    std::thread publish_worker([&sender, &publish_result]() {
+        publish_result = sender.publish_test_pattern(16u, 16u);
+    });
+    publish_worker.join();
+
+    if(publish_result.published || !contains_text(publish_result.status, "sender publish rejected")) {
+        std::fprintf(stderr, "sender publish wrong-thread rejection missing: %s\n", publish_result.status.c_str());
+        sender.disconnect();
+        return false;
+    }
+
+    juce_nozzle::receiver_client receiver(juce_nozzle::owner_thread_policy());
+    if(!receiver.connect(source_name, "juce-nozzle frame policy receiver")) {
+        std::fprintf(stderr, "receiver connect failed for frame policy test: %s\n", receiver.last_error().c_str());
+        sender.disconnect();
+        return false;
+    }
+
+    juce_nozzle::receiver_poll_result poll_result;
+    std::thread poll_worker([&receiver, &poll_result]() {
+        poll_result = receiver.poll(0u);
+    });
+    poll_worker.join();
+
+    if(poll_result.has_frame || !poll_result.connected || !contains_text(poll_result.status, "receiver poll rejected")) {
+        std::fprintf(stderr, "receiver poll wrong-thread rejection missing: %s\n", poll_result.status.c_str());
+        receiver.disconnect();
+        sender.disconnect();
+        return false;
+    }
+
+    if(!receiver.disconnect()) {
+        std::fprintf(stderr, "receiver disconnect failed on owner thread: %s\n", receiver.last_error().c_str());
+        sender.disconnect();
+        return false;
+    }
+    if(!sender.disconnect()) {
+        std::fprintf(stderr, "sender disconnect failed on owner thread after frame policy test: %s\n", sender.last_error().c_str());
+        return false;
+    }
+
+    return true;
+}
+
+bool verify_receiver_disconnect_rejects_wrong_thread() {
+    const std::string source_name = "juce_nozzle_receiver_disconnect_policy";
+    juce_nozzle::sender_client sender(juce_nozzle::owner_thread_policy());
+    if(!sender.connect(source_name, "juce-nozzle receiver disconnect policy sender")) {
+        std::fprintf(stderr, "sender connect failed for receiver disconnect policy test: %s\n", sender.last_error().c_str());
+        return false;
+    }
+
+    juce_nozzle::receiver_client receiver(juce_nozzle::owner_thread_policy());
+    if(!receiver.connect(source_name, "juce-nozzle receiver disconnect policy")) {
+        std::fprintf(stderr, "receiver connect failed for disconnect policy test: %s\n", receiver.last_error().c_str());
+        sender.disconnect();
+        return false;
+    }
+
+    bool disconnect_result = true;
+    std::string disconnect_error;
+    std::thread worker([&receiver, &disconnect_result, &disconnect_error]() {
+        disconnect_result = receiver.disconnect();
+        disconnect_error = receiver.last_error();
+    });
+    worker.join();
+
+    if(disconnect_result) {
+        std::fprintf(stderr, "receiver disconnect unexpectedly passed from a non-owner thread\n");
+        receiver.disconnect();
+        sender.disconnect();
+        return false;
+    }
+    if(!receiver.is_connected()) {
+        std::fprintf(stderr, "receiver was destroyed despite non-owner disconnect rejection\n");
+        sender.disconnect();
+        return false;
+    }
+    if(!contains_text(disconnect_error, "receiver disconnect rejected")) {
+        std::fprintf(stderr, "receiver disconnect rejection diagnostic missing: %s\n", disconnect_error.c_str());
+        receiver.disconnect();
+        sender.disconnect();
+        return false;
+    }
+
+    if(!receiver.disconnect()) {
+        std::fprintf(stderr, "receiver disconnect failed on owner thread: %s\n", receiver.last_error().c_str());
+        sender.disconnect();
+        return false;
+    }
+    if(!sender.disconnect()) {
+        std::fprintf(stderr, "sender disconnect failed after receiver disconnect policy test: %s\n", sender.last_error().c_str());
+        return false;
+    }
+
+    return true;
+}
+
+bool verify_sender_destructor_rejected_destroy_is_visible() {
+    lifecycle_violation_capture capture;
+    juce_nozzle::sender_client *sender = new juce_nozzle::sender_client(captured_owner_thread_policy(&capture));
+    if(!sender->connect("juce_nozzle_sender_destructor_policy", "juce-nozzle sender destructor policy")) {
+        std::fprintf(stderr, "sender connect failed for destructor policy test: %s\n", sender->last_error().c_str());
+        delete sender;
+        return false;
+    }
+
+    std::thread worker([sender]() {
+        delete sender;
+    });
+    worker.join();
+
+    if(capture.violation_count != 1 || capture.rejected_destroy_count != 1) {
+        std::fprintf(stderr, "sender destructor rejection was not reported/deferred: violations=%d deferred=%d\n", capture.violation_count, capture.rejected_destroy_count);
+        return false;
+    }
+    if(!contains_text(capture.operation, "sender destructor") || !contains_text(capture.diagnostic, "sender destructor rejected")) {
+        std::fprintf(stderr, "sender destructor rejection diagnostic missing: op=%s diag=%s\n", capture.operation.c_str(), capture.diagnostic.c_str());
+        return false;
+    }
+    if(capture.resource == nullptr || capture.destroy_resource == nullptr) {
+        std::fprintf(stderr, "sender destructor rejected_destroy did not provide a destroyable resource\n");
+        return false;
+    }
+
+    capture.destroy_resource(capture.resource);
+    return true;
+}
+
+bool verify_receiver_destructor_rejected_destroy_is_visible() {
+    lifecycle_violation_capture capture;
+    const std::string source_name = "juce_nozzle_receiver_destructor_policy";
+    juce_nozzle::sender_client sender(juce_nozzle::owner_thread_policy());
+    if(!sender.connect(source_name, "juce-nozzle receiver destructor policy sender")) {
+        std::fprintf(stderr, "sender connect failed for receiver destructor policy test: %s\n", sender.last_error().c_str());
+        return false;
+    }
+
+    juce_nozzle::receiver_client *receiver = new juce_nozzle::receiver_client(captured_owner_thread_policy(&capture));
+    if(!receiver->connect(source_name, "juce-nozzle receiver destructor policy")) {
+        std::fprintf(stderr, "receiver connect failed for destructor policy test: %s\n", receiver->last_error().c_str());
+        delete receiver;
+        sender.disconnect();
+        return false;
+    }
+
+    std::thread worker([receiver]() {
+        delete receiver;
+    });
+    worker.join();
+
+    if(capture.violation_count != 1 || capture.rejected_destroy_count != 1) {
+        std::fprintf(stderr, "receiver destructor rejection was not reported/deferred: violations=%d deferred=%d\n", capture.violation_count, capture.rejected_destroy_count);
+        sender.disconnect();
+        return false;
+    }
+    if(!contains_text(capture.operation, "receiver destructor") || !contains_text(capture.diagnostic, "receiver destructor rejected")) {
+        std::fprintf(stderr, "receiver destructor rejection diagnostic missing: op=%s diag=%s\n", capture.operation.c_str(), capture.diagnostic.c_str());
+        sender.disconnect();
+        return false;
+    }
+    if(capture.resource == nullptr || capture.destroy_resource == nullptr) {
+        std::fprintf(stderr, "receiver destructor rejected_destroy did not provide a destroyable resource\n");
+        sender.disconnect();
+        return false;
+    }
+
+    capture.destroy_resource(capture.resource);
+    if(!sender.disconnect()) {
+        std::fprintf(stderr, "sender disconnect failed after receiver destructor policy test: %s\n", sender.last_error().c_str());
+        return false;
+    }
+    return true;
+}
+
 bool expect_pixel(const juce_nozzle::receiver_frame &frame, uint32_t x, uint32_t y, uint8_t red, uint8_t green, uint8_t blue) {
     if(frame.width <= x || frame.height <= y) return false;
     const size_t offset = ((size_t)y * frame.width + x) * 4u;
@@ -116,13 +336,13 @@ bool verify_corners(const juce_nozzle::receiver_frame &frame) {
 bool run_size(uint32_t width, uint32_t height) {
     const std::string source_name = "juce_nozzle_smoke_" + std::to_string(width) + "x" + std::to_string(height);
 
-    juce_nozzle::sender_client sender;
+    juce_nozzle::sender_client sender(juce_nozzle::owner_thread_policy());
     if(!sender.connect(source_name, "juce-nozzle smoke sender")) {
         std::fprintf(stderr, "sender connect failed: %s\n", sender.last_error().c_str());
         return false;
     }
 
-    juce_nozzle::receiver_client receiver;
+    juce_nozzle::receiver_client receiver(juce_nozzle::owner_thread_policy());
     if(!receiver.connect(source_name, "juce-nozzle smoke receiver")) {
         std::fprintf(stderr, "receiver connect failed: %s\n", receiver.last_error().c_str());
         return false;
@@ -159,6 +379,10 @@ int main() {
     bool ok = true;
     ok = verify_policy_rejects_create() && ok;
     ok = verify_disconnect_rejects_wrong_thread() && ok;
+    ok = verify_frame_operations_reject_wrong_thread() && ok;
+    ok = verify_receiver_disconnect_rejects_wrong_thread() && ok;
+    ok = verify_sender_destructor_rejected_destroy_is_visible() && ok;
+    ok = verify_receiver_destructor_rejected_destroy_is_visible() && ok;
     ok = run_size(320u, 240u) && ok;
     ok = run_size(641u, 479u) && ok;
     return ok ? 0 : 1;
