@@ -40,42 +40,54 @@ uint8_t scaled_channel(uint32_t value, uint32_t maximum) {
     return (uint8_t)((uint64_t)value * 255u / maximum);
 }
 
-void write_test_pixel(uint8_t *pixel, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint64_t frame_index) {
-    const uint8_t horizontal = scaled_channel(x, 1u < width ? width - 1u : 0u);
-    const uint8_t vertical = scaled_channel(y, 1u < height ? height - 1u : 0u);
-    const uint8_t animated = (uint8_t)((frame_index * 7u) & 0xffu);
+void write_storage_pixel(uint8_t *pixel, NozzleTextureFormat format, uint8_t red, uint8_t green, uint8_t blue) {
+    if(format == NOZZLE_FORMAT_BGRA8_UNORM) {
+        pixel[0] = blue;
+        pixel[1] = green;
+        pixel[2] = red;
+        pixel[3] = 255u;
+        return;
+    }
 
-    pixel[0] = horizontal;
-    pixel[1] = vertical;
-    pixel[2] = animated;
+    pixel[0] = red;
+    pixel[1] = green;
+    pixel[2] = blue;
     pixel[3] = 255u;
+}
+
+void write_test_pixel(uint8_t *pixel, NozzleTextureFormat format, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint64_t frame_index) {
+    uint8_t red = scaled_channel(x, 1u < width ? width - 1u : 0u);
+    uint8_t green = scaled_channel(y, 1u < height ? height - 1u : 0u);
+    uint8_t blue = (uint8_t)((frame_index * 7u) & 0xffu);
 
     const uint32_t left_limit = width / 4u;
     const uint32_t right_limit = width - (width / 4u);
     const uint32_t top_limit = height / 4u;
     const uint32_t bottom_limit = height - (height / 4u);
     if(x < left_limit && y < top_limit) {
-        pixel[0] = 255u;
-        pixel[1] = 0u;
-        pixel[2] = 0u;
+        red = 255u;
+        green = 0u;
+        blue = 0u;
     } else if(right_limit <= x && y < top_limit) {
-        pixel[0] = 0u;
-        pixel[1] = 255u;
-        pixel[2] = 0u;
+        red = 0u;
+        green = 255u;
+        blue = 0u;
     } else if(x < left_limit && bottom_limit <= y) {
-        pixel[0] = 0u;
-        pixel[1] = 0u;
-        pixel[2] = 255u;
+        red = 0u;
+        green = 0u;
+        blue = 255u;
     } else if(right_limit <= x && bottom_limit <= y) {
-        pixel[0] = 255u;
-        pixel[1] = 255u;
-        pixel[2] = 255u;
+        red = 255u;
+        green = 255u;
+        blue = 255u;
     }
+
+    write_storage_pixel(pixel, format, red, green, blue);
 }
 
 NozzleErrorCode fill_test_pattern(NozzleMappedPixels *pixels, uint64_t frame_index) {
     if(pixels == nullptr || pixels->data == nullptr) return NOZZLE_ERROR_INVALID_ARGUMENT;
-    if(pixels->format != NOZZLE_FORMAT_RGBA8_UNORM) return NOZZLE_ERROR_UNSUPPORTED_FORMAT;
+    if(pixels->format != NOZZLE_FORMAT_RGBA8_UNORM && pixels->format != NOZZLE_FORMAT_BGRA8_UNORM) return NOZZLE_ERROR_UNSUPPORTED_FORMAT;
     if(pixels->row_stride_bytes < 0) return NOZZLE_ERROR_INVALID_ARGUMENT;
 
     const uint64_t minimum_stride = (uint64_t)pixels->width * 4u;
@@ -94,7 +106,7 @@ NozzleErrorCode fill_test_pattern(NozzleMappedPixels *pixels, uint64_t frame_ind
     for(uint32_t y = 0; y < pixels->height; y++) {
         uint8_t *row = base + ((size_t)y * (size_t)pixels->row_stride_bytes);
         for(uint32_t x = 0; x < pixels->width; x++) {
-            write_test_pixel(row + ((size_t)x * 4u), x, y, pixels->width, pixels->height, frame_index);
+            write_test_pixel(row + ((size_t)x * 4u), pixels->format, x, y, pixels->width, pixels->height, frame_index);
         }
     }
     return NOZZLE_OK;
@@ -117,7 +129,7 @@ bool sender_client::connect(const std::string &sender_name, const std::string &a
     desc.application_name = application_name_.c_str();
     desc.ring_buffer_size = 3;
     desc.fallback_flags_valid = 1;
-    desc.fallback_flags = NOZZLE_FALLBACK_NONE;
+    desc.fallback_flags = NOZZLE_FALLBACK_STORAGE_COMPATIBLE;
 
     NozzleSender *created_sender = nullptr;
     const NozzleErrorCode error = nozzle_sender_create(&desc, &created_sender);

@@ -14,7 +14,7 @@ This repository is intentionally conservative: the first usable deliverables are
   - VST3 plugin;
   - AU component on macOS.
 
-The receiver samples accept `rgba8_unorm` frames only. They receive/copy frames from the JUCE message-thread timer and never perform nozzle work in `processBlock()`. The sender standalone also publishes from the message-thread timer.
+The receiver samples accept `rgba8_unorm` semantic frames only. Storage may be `rgba8_unorm` or storage-compatible `bgra8_unorm`; the helper converts copied bytes to RGBA for the sample UI. They receive/copy frames from the JUCE message-thread timer and never perform nozzle work in `processBlock()`. The sender standalone also publishes from the message-thread timer.
 
 ## Build
 
@@ -53,7 +53,7 @@ This is still an experimental plugin-host sample. Host-specific smoke is require
 
 ## Release packages
 
-CI publishes moving `latest` packages from `main`:
+CI builds the examples, runs the in-process `NozzleStandaloneSmoke` CPU writable-frame sender/receiver baseline, and publishes moving `latest` packages from `main`:
 
 ```text
 juce-nozzle-latest-<short_sha>-macos-universal.zip

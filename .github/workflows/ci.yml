@@ -46,6 +46,27 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --target NozzleReceiverPlugin_All NozzleSenderStandalone NozzleReceiverStandalone NozzleStandaloneSmoke
 
+      - name: Run standalone smoke
+        shell: bash
+        run: |
+          smoke_executable=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            for candidate in build/Release/NozzleStandaloneSmoke.exe build/NozzleStandaloneSmoke.exe; do
+              if [ -f "$candidate" ]; then
+                smoke_executable="$candidate"
+                break
+              fi
+            done
+          else
+            smoke_executable="build/NozzleStandaloneSmoke"
+          fi
+          if [ ! -f "$smoke_executable" ]; then
+            echo "NozzleStandaloneSmoke executable not found" >&2
+            find build -name 'NozzleStandaloneSmoke*' -print >&2
+            exit 1
+          fi
+          "$smoke_executable"
+
       - name: Verify macOS universal plugin binaries
         if: runner.os == 'macOS'
         shell: bash

@@ -4,6 +4,7 @@
 
 #include <limits>
 #include <sstream>
+#include <vector>
 
 namespace juce_nozzle {
 namespace {
@@ -38,6 +39,14 @@ uint64_t rgba8_size(uint32_t width, uint32_t height) {
     const uint64_t pixel_count = (uint64_t)width * height;
     if(std::numeric_limits<uint64_t>::max() / 4u < pixel_count) return 0;
     return pixel_count * 4u;
+}
+
+void convert_bgra_to_rgba(std::vector<uint8_t> &pixels) {
+    for(size_t offset = 0; offset + 3u < pixels.size(); offset += 4u) {
+        const uint8_t blue = pixels[offset + 0u];
+        pixels[offset + 0u] = pixels[offset + 2u];
+        pixels[offset + 2u] = blue;
+    }
 }
 
 } // namespace
@@ -116,10 +125,17 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
         return result;
     }
 
-    if(frame_info.format != NOZZLE_FORMAT_RGBA8_UNORM) {
+    if(frame_info.semantic_format != NOZZLE_FORMAT_RGBA8_UNORM) {
         nozzle_frame_release(frame);
         result.connected = true;
-        result.status = "unsupported source format; sample receiver accepts rgba8_unorm only";
+        result.status = "unsupported source semantic format; sample receiver accepts rgba8_unorm only";
+        last_error_ = result.status;
+        return result;
+    }
+    if(frame_info.format != NOZZLE_FORMAT_RGBA8_UNORM && frame_info.format != NOZZLE_FORMAT_BGRA8_UNORM) {
+        nozzle_frame_release(frame);
+        result.connected = true;
+        result.status = "unsupported source storage format; sample receiver accepts rgba8_unorm/bgra8_unorm storage only";
         last_error_ = result.status;
         return result;
     }
@@ -154,6 +170,9 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
         result.status = status_with_error("copy_pixels failed", copy_error);
         last_error_ = result.status;
         return result;
+    }
+    if(copied_pixels.format == NOZZLE_FORMAT_BGRA8_UNORM) {
+        convert_bgra_to_rgba(result.frame.rgba8);
     }
 
     NozzleConnectedSenderInfo sender_info{};
