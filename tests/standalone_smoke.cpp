@@ -8,6 +8,87 @@
 
 namespace {
 
+bool deny_thread_policy(void *user_data) {
+    (void)user_data;
+    return false;
+}
+
+juce_nozzle::thread_policy denied_policy() {
+    juce_nozzle::thread_policy policy;
+    policy.required_context = "test non-audio thread";
+    policy.is_allowed = deny_thread_policy;
+    return policy;
+}
+
+bool contains_text(const std::string &text, const char *needle) {
+    return text.find(needle) != std::string::npos;
+}
+
+bool verify_policy_rejects_create() {
+    juce_nozzle::sender_client sender(denied_policy());
+    if(sender.connect("juce_nozzle_rejected_sender", "juce-nozzle rejected sender")) {
+        std::fprintf(stderr, "sender connect unexpectedly passed with denied thread policy\n");
+        sender.disconnect();
+        return false;
+    }
+    if(!contains_text(sender.last_error(), "sender connect rejected")) {
+        std::fprintf(stderr, "sender connect rejection diagnostic missing: %s\n", sender.last_error().c_str());
+        return false;
+    }
+
+    juce_nozzle::receiver_client receiver(denied_policy());
+    if(receiver.connect("juce_nozzle_rejected_receiver", "juce-nozzle rejected receiver")) {
+        std::fprintf(stderr, "receiver connect unexpectedly passed with denied thread policy\n");
+        receiver.disconnect();
+        return false;
+    }
+    if(!contains_text(receiver.last_error(), "receiver connect rejected")) {
+        std::fprintf(stderr, "receiver connect rejection diagnostic missing: %s\n", receiver.last_error().c_str());
+        return false;
+    }
+
+    return true;
+}
+
+bool verify_disconnect_rejects_wrong_thread() {
+    const std::string source_name = "juce_nozzle_disconnect_policy";
+    juce_nozzle::sender_client sender;
+    if(!sender.connect(source_name, "juce-nozzle disconnect policy sender")) {
+        std::fprintf(stderr, "sender connect failed for disconnect policy test: %s\n", sender.last_error().c_str());
+        return false;
+    }
+
+    bool disconnect_result = true;
+    std::string disconnect_error;
+    std::thread worker([&sender, &disconnect_result, &disconnect_error]() {
+        disconnect_result = sender.disconnect();
+        disconnect_error = sender.last_error();
+    });
+    worker.join();
+
+    if(disconnect_result) {
+        std::fprintf(stderr, "sender disconnect unexpectedly passed from a non-owner thread\n");
+        sender.disconnect();
+        return false;
+    }
+    if(!sender.is_connected()) {
+        std::fprintf(stderr, "sender was destroyed despite non-owner disconnect rejection\n");
+        return false;
+    }
+    if(!contains_text(disconnect_error, "sender disconnect rejected")) {
+        std::fprintf(stderr, "sender disconnect rejection diagnostic missing: %s\n", disconnect_error.c_str());
+        sender.disconnect();
+        return false;
+    }
+
+    if(!sender.disconnect()) {
+        std::fprintf(stderr, "sender disconnect failed on owner thread: %s\n", sender.last_error().c_str());
+        return false;
+    }
+
+    return true;
+}
+
 bool expect_pixel(const juce_nozzle::receiver_frame &frame, uint32_t x, uint32_t y, uint8_t red, uint8_t green, uint8_t blue) {
     if(frame.width <= x || frame.height <= y) return false;
     const size_t offset = ((size_t)y * frame.width + x) * 4u;
@@ -76,6 +157,8 @@ bool run_size(uint32_t width, uint32_t height) {
 
 int main() {
     bool ok = true;
+    ok = verify_policy_rejects_create() && ok;
+    ok = verify_disconnect_rejects_wrong_thread() && ok;
     ok = run_size(320u, 240u) && ok;
     ok = run_size(641u, 479u) && ok;
     return ok ? 0 : 1;

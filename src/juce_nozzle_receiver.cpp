@@ -51,12 +51,31 @@ void convert_bgra_to_rgba(std::vector<uint8_t> &pixels) {
 
 } // namespace
 
+receiver_client::receiver_client()
+: thread_policy_(owner_thread_policy())
+{}
+
+receiver_client::receiver_client(thread_policy policy)
+: thread_policy_(policy)
+{}
+
 receiver_client::~receiver_client() {
     disconnect();
 }
 
+bool receiver_client::validate_thread(const char *operation) {
+    if(thread_policy_.allows_current_thread(allowed_thread_)) return true;
+
+    const char *required_context = thread_policy_.required_context != nullptr ? thread_policy_.required_context : "required thread context";
+    std::ostringstream stream;
+    stream << operation << " rejected: call from " << required_context << "; never call nozzle APIs from processBlock()";
+    last_error_ = stream.str();
+    return false;
+}
+
 bool receiver_client::connect(const std::string &sender_name, const std::string &application_name) {
-    disconnect();
+    if(!validate_thread("receiver connect")) return false;
+    if(!disconnect()) return false;
     sender_name_ = sender_name;
     application_name_ = application_name;
 
@@ -79,12 +98,15 @@ bool receiver_client::connect(const std::string &sender_name, const std::string 
     return true;
 }
 
-void receiver_client::disconnect() {
-    if(receiver_ != nullptr) {
-        nozzle_receiver_destroy((NozzleReceiver *)receiver_);
-        receiver_ = nullptr;
-        allowed_thread_ = std::thread::id{};
-    }
+bool receiver_client::disconnect() {
+    if(receiver_ == nullptr) return true;
+    if(!validate_thread("receiver disconnect")) return false;
+
+    nozzle_receiver_destroy((NozzleReceiver *)receiver_);
+    receiver_ = nullptr;
+    allowed_thread_ = std::thread::id{};
+    last_error_ = "receiver disconnected";
+    return true;
 }
 
 receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
@@ -94,9 +116,9 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
         last_error_ = result.status;
         return result;
     }
-    if(allowed_thread_ != std::thread::id{} && std::this_thread::get_id() != allowed_thread_) {
+    if(!validate_thread("receiver poll")) {
         result.connected = true;
-        result.status = "receiver poll rejected: call from the thread that created the receiver; never call from processBlock()";
+        result.status = last_error_;
         last_error_ = result.status;
         return result;
     }

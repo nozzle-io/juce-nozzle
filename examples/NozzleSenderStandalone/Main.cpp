@@ -6,6 +6,18 @@
 
 namespace {
 
+bool is_juce_message_thread(void *user_data) {
+    juce::ignoreUnused(user_data);
+    return juce::MessageManager::getInstance()->isThisTheMessageThread();
+}
+
+juce_nozzle::thread_policy juce_message_thread_policy() {
+    juce_nozzle::thread_policy policy;
+    policy.required_context = "JUCE message thread";
+    policy.is_allowed = is_juce_message_thread;
+    return policy;
+}
+
 struct smoke_sender_options {
     bool enabled{false};
     std::string source_name{"juce_nozzle_app_smoke"};
@@ -148,7 +160,7 @@ private:
             return;
         }
 
-        sender_ = std::make_unique<juce_nozzle::sender_client>();
+        sender_ = std::make_unique<juce_nozzle::sender_client>(juce_message_thread_policy());
         if(!sender_->connect(source_name.toStdString(), "juce-nozzle sender standalone")) {
             status_label_.setText(sender_->last_error(), juce::dontSendNotification);
             sender_.reset();

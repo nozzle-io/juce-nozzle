@@ -46,8 +46,12 @@ Nozzle calls must not run on an audio callback thread. The example enforces this
 - `processBlock()` only clears audio output;
 - receiver creation, acquire, copy, and destruction happen from the editor/message-thread timer;
 - standalone sender publish happens from the message-thread timer;
-- helper clients reject cross-thread `poll()`/`publish_test_pattern()` calls after creation;
+- helper clients support an explicit `juce_nozzle::thread_policy`;
+- the standalone/plugin UI paths pass a JUCE message-thread policy, so create/connect, poll/publish, and disconnect/destroy are rejected if called outside the message thread;
+- the default low-level helper policy remains owner-thread based for non-GUI smoke code, but reusable JUCE UI/plugin code should use the message-thread policy instead of calling nozzle work directly;
 - closing the editor or standalone window destroys the receiver/sender.
+
+If a policy rejects a call, the helper returns `false` or a result with `published=false`/`has_frame=false` plus an explicit diagnostic such as `sender connect rejected` or `receiver poll rejected`. It does not throw. Destructors also respect the policy; callers should disconnect on the owning/message thread before destroying helper objects.
 
 This is still an experimental plugin-host sample. Host-specific smoke is required before claiming runtime support for a DAW.
 

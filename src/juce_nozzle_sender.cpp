@@ -114,12 +114,31 @@ NozzleErrorCode fill_test_pattern(NozzleMappedPixels *pixels, uint64_t frame_ind
 
 } // namespace
 
+sender_client::sender_client()
+: thread_policy_(owner_thread_policy())
+{}
+
+sender_client::sender_client(thread_policy policy)
+: thread_policy_(policy)
+{}
+
 sender_client::~sender_client() {
     disconnect();
 }
 
+bool sender_client::validate_thread(const char *operation) {
+    if(thread_policy_.allows_current_thread(allowed_thread_)) return true;
+
+    const char *required_context = thread_policy_.required_context != nullptr ? thread_policy_.required_context : "required thread context";
+    std::ostringstream stream;
+    stream << operation << " rejected: call from " << required_context << "; never call nozzle APIs from processBlock()";
+    last_error_ = stream.str();
+    return false;
+}
+
 bool sender_client::connect(const std::string &sender_name, const std::string &application_name) {
-    disconnect();
+    if(!validate_thread("sender connect")) return false;
+    if(!disconnect()) return false;
     sender_name_ = sender_name;
     application_name_ = application_name;
     frame_counter_ = 0;
@@ -145,12 +164,15 @@ bool sender_client::connect(const std::string &sender_name, const std::string &a
     return true;
 }
 
-void sender_client::disconnect() {
-    if(sender_ != nullptr) {
-        nozzle_sender_destroy((NozzleSender *)sender_);
-        sender_ = nullptr;
-        allowed_thread_ = std::thread::id{};
-    }
+bool sender_client::disconnect() {
+    if(sender_ == nullptr) return true;
+    if(!validate_thread("sender disconnect")) return false;
+
+    nozzle_sender_destroy((NozzleSender *)sender_);
+    sender_ = nullptr;
+    allowed_thread_ = std::thread::id{};
+    last_error_ = "sender disconnected";
+    return true;
 }
 
 sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32_t height) {
@@ -160,8 +182,8 @@ sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32
         last_error_ = result.status;
         return result;
     }
-    if(allowed_thread_ != std::thread::id{} && std::this_thread::get_id() != allowed_thread_) {
-        result.status = "sender publish rejected: call from the thread that created the sender; never call from processBlock()";
+    if(!validate_thread("sender publish")) {
+        result.status = last_error_;
         last_error_ = result.status;
         return result;
     }

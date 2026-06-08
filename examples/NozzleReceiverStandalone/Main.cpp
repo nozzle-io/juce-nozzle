@@ -6,6 +6,18 @@
 
 namespace {
 
+bool is_juce_message_thread(void *user_data) {
+    juce::ignoreUnused(user_data);
+    return juce::MessageManager::getInstance()->isThisTheMessageThread();
+}
+
+juce_nozzle::thread_policy juce_message_thread_policy() {
+    juce_nozzle::thread_policy policy;
+    policy.required_context = "JUCE message thread";
+    policy.is_allowed = is_juce_message_thread;
+    return policy;
+}
+
 struct smoke_receiver_options {
     bool enabled{false};
     std::string source_name{"juce_nozzle_app_smoke"};
@@ -185,7 +197,7 @@ private:
             status_label_.setText("Source name is empty.", juce::dontSendNotification);
             return;
         }
-        receiver_ = std::make_unique<juce_nozzle::receiver_client>();
+        receiver_ = std::make_unique<juce_nozzle::receiver_client>(juce_message_thread_policy());
         observed_frames_ = 0;
         preview_image_ = {};
         const bool connected = receiver_->connect(source_name.toStdString(), "juce-nozzle receiver standalone");
