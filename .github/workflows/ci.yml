@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+env:
+  JUCE_NOZZLE_JUCE_TAG: '8.0.13'
+  CCACHE_DIR: ${{ github.workspace }}/.ci/ccache
+  SCCACHE_DIR: ${{ github.workspace }}/.ci/sccache
+  SCCACHE_CACHE_SIZE: 2G
+
 jobs:
   build:
     name: Build (${{ matrix.os }})
@@ -34,17 +40,134 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Configure
+      - name: Restore JUCE source cache
+        id: juce-source-cache
+        uses: actions/cache@v5
+        with:
+          path: .ci/JUCE
+          key: juce-source-${{ runner.os }}-${{ env.JUCE_NOZZLE_JUCE_TAG }}
+
+      - name: Populate JUCE source cache
         shell: bash
         run: |
+          if [ ! -d .ci/JUCE/.git ]; then
+            rm -rf .ci/JUCE
+            git clone --depth 1 --branch "$JUCE_NOZZLE_JUCE_TAG" https://github.com/juce-framework/JUCE.git .ci/JUCE
+          fi
+          git -C .ci/JUCE rev-parse --short HEAD
+          git -C .ci/JUCE describe --tags --exact-match
+
+      - name: Restore ccache
+        if: runner.os == 'macOS'
+        uses: actions/cache@v5
+        with:
+          path: .ci/ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Set up ccache
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if ! command -v ccache >/dev/null 2>&1; then
+            brew install ccache
+          fi
+          mkdir -p .ci/ccache
+          ccache --version
+          ccache --set-config=cache_dir="$GITHUB_WORKSPACE/.ci/ccache"
+          ccache --set-config=max_size=2G
+          ccache --zero-stats
+
+      - name: Restore sccache
+        if: runner.os == 'Windows'
+        uses: actions/cache@v5
+        with:
+          path: .ci/sccache
+          key: sccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-
+
+      - name: Set up sccache
+        if: runner.os == 'Windows'
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Set up MSVC developer command prompt
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $install_dir = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $install_dir) {
+            Write-Error 'Visual Studio installation with MSVC x64 tools was not found.'
+            exit 1
+          }
+          $vcvars = Join-Path $install_dir 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) {
+            Write-Error "vcvars64.bat was not found: $vcvars"
+            exit 1
+          }
+          cmd /s /c "`"$vcvars`" && set" | ForEach-Object {
+            if ($_ -match '^(.*?)=(.*)$') {
+              $name = $matches[1]
+              $value = $matches[2]
+              if ($name -match '^(Path|INCLUDE|LIB|LIBPATH|UCRTVersion|UniversalCRTSdkDir|VCIDEInstallDir|VCINSTALLDIR|VCToolsInstallDir|VCToolsRedistDir|VCToolsVersion|VisualStudioVersion|VSINSTALLDIR|WindowsLibPath|WindowsSdkBinPath|WindowsSdkDir|WindowsSDKLibVersion|WindowsSDKVersion|__VSCMD_PREINIT_PATH)$') {
+                "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              }
+            }
+          }
+
+      - name: Configure
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ci/ccache
+          SCCACHE_DIR: ${{ github.workspace }}/.ci/sccache
+          SCCACHE_CACHE_SIZE: 2G
+        run: |
+          juce_source_dir="$(pwd)/.ci/JUCE"
+          common_args=(
+            -DJUCE_NOZZLE_BUILD_EXAMPLES=ON
+            -DJUCE_NOZZLE_JUCE_TAG="$JUCE_NOZZLE_JUCE_TAG"
+            -DFETCHCONTENT_SOURCE_DIR_JUCE="$juce_source_dir"
+          )
           if [ "${{ runner.os }}" = "macOS" ]; then
-            cmake -S . -B build -DJUCE_NOZZLE_BUILD_EXAMPLES=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+            cmake -S . -B build \
+              "${common_args[@]}" \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+              -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
           else
-            cmake -S . -B build -DJUCE_NOZZLE_BUILD_EXAMPLES=ON
+            cmake -S . -B build -G Ninja \
+              "${common_args[@]}" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           fi
 
       - name: Build
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ci/ccache
+          SCCACHE_DIR: ${{ github.workspace }}/.ci/sccache
+          SCCACHE_CACHE_SIZE: 2G
         run: cmake --build build --config Release --target NozzleReceiverPlugin_All NozzleSenderStandalone NozzleReceiverStandalone NozzleStandaloneSmoke
+
+      - name: Show compiler cache stats
+        if: always()
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ci/ccache
+          SCCACHE_DIR: ${{ github.workspace }}/.ci/sccache
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            ccache --show-stats
+          elif command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats
+          else
+            echo "sccache is not available"
+            exit 1
+          fi
 
       - name: Run standalone smoke
         shell: bash
