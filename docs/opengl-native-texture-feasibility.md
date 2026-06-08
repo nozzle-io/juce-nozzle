@@ -51,7 +51,7 @@ Backend behavior in `nozzle/src/backends/opengl/opengl_backend.cpp`:
 
 | Platform | JUCE standalone path | Transfer mode | Verdict |
 |---|---|---|---|
-| macOS | `OpenGLFrameBuffer::getTextureID()` -> `nozzle_sender_publish_gl_texture(...)` | `gpu_copy_cgl_iosurface` | Supported prototype. Receiver smoke passes via `nozzle-viewer`. |
+| macOS | `OpenGLFrameBuffer::getTextureID()` -> `nozzle_sender_publish_gl_texture(...)` | `gpu_copy_cgl_iosurface` | Supported prototype. Receiver smoke passes via `Nozzle Receiver Standalone` and `nozzle-viewer`. |
 | Windows | `OpenGLFrameBuffer::getTextureID()` -> `nozzle_sender_publish_gl_texture(...)` | `cpu_readback_d3d11_staging` | Build/verification candidate only; do not claim GPU/native texture path. |
 | Linux | JUCE GL texture -> nozzle GL publish | unsupported | Current nozzle core returns unsupported for GL/DMA-BUF publish. |
 | Plugin hosts | Host/editor-specific OpenGL context | unknown | No DAW/plugin-host support claim without host-specific smoke. |
@@ -66,15 +66,21 @@ The smoke output includes a transfer mode string, e.g. `transfer_mode=gpu_copy_c
 
 ## Current evidence
 
-Local macOS evidence after implementation:
+Local macOS evidence after #156:
 
 ```text
 Nozzle Sender Standalone --smoke-opengl-sender -> nozzle-viewer --smoke-receiver
-320x240: PASS, sender_rc=0, viewer_rc=0, receiver frame=5
-641x479: PASS, sender_rc=0, viewer_rc=0, receiver frame=6
+320x240: PASS, sender_rc=0, viewer_rc=0
+641x479: PASS, sender_rc=0, viewer_rc=0
+
+Nozzle Sender Standalone --smoke-opengl-sender -> Nozzle Receiver Standalone --smoke-receiver
+320x240: PASS, sender_rc=0, receiver_rc=0
+641x479: PASS, sender_rc=0, receiver_rc=0
 ```
 
-`Nozzle Receiver Standalone` currently rejects this macOS GL path because the core CGL/IOSurface path publishes BGRA-backed storage and that receiver smoke accepts `rgba8_unorm` only. `nozzle-viewer` is the valid receiver evidence target for this prototype because it supports the storage format conversion path.
+Follow-up issue #156 fixed the macOS CGL/IOSurface metadata boundary: the core GL publish path now preserves the caller-requested `rgba8_unorm` semantic format while using BGRA-compatible IOSurface storage when required by CGL. With that fix, `Nozzle Receiver Standalone --smoke-receiver` also accepts the OpenGL sender and validates the same strict quadrant oracle.
+
+This evidence is a standalone CPU copy-out receiver smoke. It proves the public receiver frame metadata and CPU copy path for the JUCE sample receiver; it is not a claim that every native GPU sampling path has been validated.
 
 ## No audio callback claim
 

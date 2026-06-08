@@ -225,6 +225,8 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
     result.frame.height = frame_info.height;
     result.frame.frame_index = frame_info.frame_index;
     result.frame.dropped_frame_count = frame_info.dropped_frame_count;
+    result.frame.storage_format = (int)frame_info.format;
+    result.frame.semantic_format = (int)frame_info.semantic_format;
     result.frame.rgba8.resize((size_t)byte_count);
 
     NozzleMappedPixels copied_pixels{};
@@ -243,6 +245,7 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
         set_last_error(result.status);
         return result;
     }
+    result.frame.copied_format = (int)copied_pixels.format;
     if(copied_pixels.format == NOZZLE_FORMAT_BGRA8_UNORM) {
         convert_bgra_to_rgba(result.frame.rgba8);
     }

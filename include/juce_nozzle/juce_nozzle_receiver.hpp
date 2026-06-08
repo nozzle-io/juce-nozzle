@@ -15,6 +15,9 @@ struct receiver_frame {
     uint32_t height{0};
     uint64_t frame_index{0};
     uint32_t dropped_frame_count{0};
+    int storage_format{0};
+    int semantic_format{0};
+    int copied_format{0};
     double estimated_fps{0.0};
     std::vector<uint8_t> rgba8;
 };

@@ -1,6 +1,7 @@
 #include <JuceHeader.h>
 #include <juce_nozzle/juce_nozzle_receiver.hpp>
 #include <juce_nozzle/juce_thread_policy.hpp>
+#include <nozzle/nozzle_c.h>
 
 #include <cstdio>
 #include <fstream>
@@ -41,6 +42,9 @@ struct smoke_evidence {
     uint64_t observed_frame_index{0};
     uint64_t observed_frame_count{0};
     double estimated_fps{0.0};
+    int observed_storage_format{0};
+    int observed_semantic_format{0};
+    int observed_copied_format{0};
     bool dimensions_ok{false};
     bool top_left_red{false};
     bool top_right_green{false};
@@ -117,6 +121,17 @@ const char *check_text(bool value) {
     return value ? "PASS" : "FAIL";
 }
 
+const char *texture_format_name(int format) {
+    switch(format) {
+        case NOZZLE_FORMAT_RGBA8_UNORM: return "rgba8_unorm";
+        case NOZZLE_FORMAT_BGRA8_UNORM: return "bgra8_unorm";
+        case NOZZLE_FORMAT_RGBA8_SRGB: return "rgba8_srgb";
+        case NOZZLE_FORMAT_BGRA8_SRGB: return "bgra8_srgb";
+        case NOZZLE_FORMAT_UNKNOWN: return "unknown";
+        default: return "other";
+    }
+}
+
 smoke_sample sample_pixel(const juce_nozzle::receiver_frame &frame, const std::string &name, uint32_t x, uint32_t y, uint8_t red, uint8_t green, uint8_t blue) {
     smoke_sample sample{};
     sample.name = name;
@@ -168,6 +183,7 @@ std::string make_smoke_evidence_json(const smoke_receiver_options &options, cons
     stream << "  \"receiver_name\": \"Nozzle Receiver Standalone\",\n";
     stream << "  \"dimensions\": {\"expected_width\":" << options.width << ",\"expected_height\":" << options.height << ",\"observed_width\":" << evidence.observed_width << ",\"observed_height\":" << evidence.observed_height << "},\n";
     stream << "  \"frame\": {\"observed_index\":" << evidence.observed_frame_index << ",\"observed_count\":" << evidence.observed_frame_count << ",\"estimated_fps\":" << evidence.estimated_fps << ",\"timeout_ms\":" << options.timeout_ms << "},\n";
+    stream << "  \"formats\": {\"storage\":\"" << texture_format_name(evidence.observed_storage_format) << "\",\"storage_value\":" << evidence.observed_storage_format << ",\"semantic\":\"" << texture_format_name(evidence.observed_semantic_format) << "\",\"semantic_value\":" << evidence.observed_semantic_format << ",\"copied\":\"" << texture_format_name(evidence.observed_copied_format) << "\",\"copied_value\":" << evidence.observed_copied_format << "},\n";
     stream << "  \"checks\": {\"dimensions\":\"" << check_text(evidence.dimensions_ok) << "\",\"top_left_red\":\"" << check_text(evidence.top_left_red) << "\",\"top_right_green\":\"" << check_text(evidence.top_right_green) << "\",\"bottom_left_blue\":\"" << check_text(evidence.bottom_left_blue) << "\",\"bottom_right_white\":\"" << check_text(evidence.bottom_right_white) << "\",\"orientation\":\"" << check_text(evidence.orientation_ok) << "\",\"channel_order\":\"" << check_text(evidence.channel_order_ok) << "\"},\n";
     stream << "  \"samples\": [\n";
     for(size_t index = 0; index < evidence.samples.size(); index++) {
@@ -225,6 +241,9 @@ int run_smoke_receiver(const smoke_receiver_options &options) {
                 evidence.observed_frame_index = result.frame.frame_index;
                 evidence.observed_frame_count = 1u;
                 evidence.estimated_fps = result.frame.estimated_fps;
+                evidence.observed_storage_format = result.frame.storage_format;
+                evidence.observed_semantic_format = result.frame.semantic_format;
+                evidence.observed_copied_format = result.frame.copied_format;
                 evidence.failure_reason = "dimension_mismatch";
                 write_smoke_evidence(options, evidence);
                 return 1;
@@ -234,6 +253,9 @@ int run_smoke_receiver(const smoke_receiver_options &options) {
             evidence.observed_frame_index = result.frame.frame_index;
             evidence.observed_frame_count = 1u;
             evidence.estimated_fps = result.frame.estimated_fps;
+            evidence.observed_storage_format = result.frame.storage_format;
+            evidence.observed_semantic_format = result.frame.semantic_format;
+            evidence.observed_copied_format = result.frame.copied_format;
             evidence.dimensions_ok = true;
             verify_corners(result.frame, evidence);
             evidence.passed = evidence.orientation_ok && evidence.channel_order_ok;
