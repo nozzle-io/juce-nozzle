@@ -2,14 +2,21 @@
 #include <juce_nozzle/juce_nozzle_sender.hpp>
 #include <juce_nozzle/juce_thread_policy.hpp>
 
+#include <nozzle/nozzle_c.h>
+
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <memory>
 #include <string>
+#include <utility>
 
 namespace {
 
 
 struct smoke_sender_options {
     bool enabled{false};
+    bool opengl_enabled{false};
     std::string source_name{"juce_nozzle_app_smoke"};
     uint32_t width{320};
     uint32_t height{240};
@@ -35,7 +42,8 @@ juce::String parse_string_option(const juce::StringArray &tokens, const juce::St
 smoke_sender_options parse_smoke_sender_options(const juce::String &command_line) {
     smoke_sender_options options;
     const juce::StringArray tokens = juce::StringArray::fromTokens(command_line, true);
-    options.enabled = tokens.contains("--smoke-sender");
+    options.enabled = tokens.contains("--smoke-sender") || tokens.contains("--smoke-opengl-sender");
+    options.opengl_enabled = tokens.contains("--smoke-opengl-sender");
     if(!options.enabled) return options;
     options.source_name = parse_string_option(tokens, "--source", "juce_nozzle_app_smoke").toStdString();
     options.width = parse_uint_option(tokens, "--width", 320u);
@@ -43,6 +51,37 @@ smoke_sender_options parse_smoke_sender_options(const juce::String &command_line
     options.frames = parse_uint_option(tokens, "--frames", 240u);
     options.interval_ms = parse_uint_option(tokens, "--interval-ms", 16u);
     return options;
+}
+
+const char *nozzle_error_name(NozzleErrorCode error) {
+    switch(error) {
+        case NOZZLE_OK: return "NOZZLE_OK";
+        case NOZZLE_ERROR_UNKNOWN: return "NOZZLE_ERROR_UNKNOWN";
+        case NOZZLE_ERROR_INVALID_ARGUMENT: return "NOZZLE_ERROR_INVALID_ARGUMENT";
+        case NOZZLE_ERROR_UNSUPPORTED_BACKEND: return "NOZZLE_ERROR_UNSUPPORTED_BACKEND";
+        case NOZZLE_ERROR_UNSUPPORTED_FORMAT: return "NOZZLE_ERROR_UNSUPPORTED_FORMAT";
+        case NOZZLE_ERROR_DEVICE_MISMATCH: return "NOZZLE_ERROR_DEVICE_MISMATCH";
+        case NOZZLE_ERROR_RESOURCE_CREATION_FAILED: return "NOZZLE_ERROR_RESOURCE_CREATION_FAILED";
+        case NOZZLE_ERROR_SHARED_HANDLE_FAILED: return "NOZZLE_ERROR_SHARED_HANDLE_FAILED";
+        case NOZZLE_ERROR_SENDER_NOT_FOUND: return "NOZZLE_ERROR_SENDER_NOT_FOUND";
+        case NOZZLE_ERROR_SENDER_CLOSED: return "NOZZLE_ERROR_SENDER_CLOSED";
+        case NOZZLE_ERROR_TIMEOUT: return "NOZZLE_ERROR_TIMEOUT";
+        case NOZZLE_ERROR_BACKEND_ERROR: return "NOZZLE_ERROR_BACKEND_ERROR";
+        case NOZZLE_ERROR_COMMAND_FAILED: return "NOZZLE_ERROR_COMMAND_FAILED";
+        default: return "NOZZLE_ERROR_UNRECOGNIZED";
+    }
+}
+
+const char *opengl_transfer_mode() {
+#if JUCE_MAC
+    return "gpu_copy_cgl_iosurface";
+#elif JUCE_WINDOWS
+    return "cpu_readback_d3d11_staging";
+#elif JUCE_LINUX
+    return "unsupported_linux_gl_dmabuf";
+#else
+    return "unsupported_platform";
+#endif
 }
 
 int run_smoke_sender(const smoke_sender_options &options) {
@@ -76,6 +115,167 @@ int run_smoke_sender(const smoke_sender_options &options) {
 }
 
 } // namespace
+
+class opengl_smoke_component final : public juce::Component, private juce::OpenGLRenderer {
+public:
+    explicit opengl_smoke_component(smoke_sender_options options)
+    : options_(std::move(options))
+    {
+        setSize((int)options_.width, (int)options_.height);
+        context_.setRenderer(this);
+        context_.setContinuousRepainting(true);
+        context_.attachTo(*this);
+    }
+
+    ~opengl_smoke_component() override {
+        context_.detach();
+    }
+
+    int result_code() const noexcept { return result_code_.load(); }
+
+private:
+    void newOpenGLContextCreated() override {
+        NozzleSenderDesc desc{};
+        desc.name = options_.source_name.c_str();
+        desc.application_name = "juce-nozzle OpenGL sender standalone smoke";
+        desc.ring_buffer_size = 3;
+        desc.fallback_flags_valid = 1;
+        desc.fallback_flags = NOZZLE_FALLBACK_STORAGE_COMPATIBLE;
+        NozzleSender *created_sender = nullptr;
+        const NozzleErrorCode error = nozzle_sender_create(&desc, &created_sender);
+        if(error != NOZZLE_OK || created_sender == nullptr) {
+            fail(juce::String("opengl sender create failed: ") + nozzle_error_name(error));
+            return;
+        }
+        sender_ = created_sender;
+    }
+
+    void openGLContextClosing() override {
+        frame_buffer_.release();
+        if(sender_ != nullptr) {
+            nozzle_sender_destroy(sender_);
+            sender_ = nullptr;
+        }
+    }
+
+    void renderOpenGL() override {
+        if(finished_.load() || sender_ == nullptr) return;
+        if(!frame_buffer_.isValid()) {
+            if(!frame_buffer_.initialise(context_, (int)options_.width, (int)options_.height)) {
+                fail("opengl framebuffer initialise failed");
+                return;
+            }
+        }
+
+        if(!frame_buffer_.makeCurrentRenderingTarget()) {
+            fail("opengl framebuffer target failed");
+            return;
+        }
+
+        render_quadrants_for_nozzle_oracle();
+        frame_buffer_.releaseAsRenderingTarget();
+
+        const NozzleErrorCode error = nozzle_sender_publish_gl_texture(
+            sender_,
+            (uint32_t)frame_buffer_.getTextureID(),
+            (uint32_t)juce::gl::GL_TEXTURE_2D,
+            options_.width,
+            options_.height,
+            NOZZLE_FORMAT_RGBA8_UNORM
+        );
+        if(error != NOZZLE_OK) {
+            fail(juce::String("opengl publish failed: ") + nozzle_error_name(error));
+            return;
+        }
+
+        const uint32_t frame = published_frames_++;
+        if(frame == 0u || frame + 1u == options_.frames) {
+            std::printf(
+                "standalone opengl sender smoke published %ux%u frame=%u source=%s transfer_mode=%s\n",
+                options_.width,
+                options_.height,
+                frame,
+                options_.source_name.c_str(),
+                opengl_transfer_mode()
+            );
+            std::fflush(stdout);
+        }
+        if(options_.frames <= published_frames_) {
+            finish(0);
+        }
+        juce::Thread::sleep((int)options_.interval_ms);
+    }
+
+    void render_quadrants_for_nozzle_oracle() {
+        juce::gl::glViewport(0, 0, (int)options_.width, (int)options_.height);
+        juce::gl::glDisable(juce::gl::GL_SCISSOR_TEST);
+        juce::gl::glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        juce::gl::glClear(juce::gl::GL_COLOR_BUFFER_BIT);
+        juce::gl::glEnable(juce::gl::GL_SCISSOR_TEST);
+
+        const int width = (int)options_.width;
+        const int height = (int)options_.height;
+        const int marker_width = std::max(1, width / 4);
+        const int marker_height = std::max(1, height / 4);
+
+        // nozzle's macOS CGL/IOSurface publish path maps GL row 0 to canonical top row.
+        // Therefore GL bottom-left becomes receiver top-left.
+        clear_rect(0, 0, marker_width, marker_height, 1.0f, 0.0f, 0.0f); // receiver TL red
+        clear_rect(width - marker_width, 0, marker_width, marker_height, 0.0f, 1.0f, 0.0f); // receiver TR green
+        clear_rect(0, height - marker_height, marker_width, marker_height, 0.0f, 0.0f, 1.0f); // receiver BL blue
+        clear_rect(width - marker_width, height - marker_height, marker_width, marker_height, 1.0f, 1.0f, 1.0f); // receiver BR white
+
+        juce::gl::glDisable(juce::gl::GL_SCISSOR_TEST);
+        juce::gl::glFlush();
+    }
+
+    static void clear_rect(int x, int y, int width, int height, float red, float green, float blue) {
+        juce::gl::glScissor(x, y, width, height);
+        juce::gl::glClearColor(red, green, blue, 1.0f);
+        juce::gl::glClear(juce::gl::GL_COLOR_BUFFER_BIT);
+    }
+
+    void fail(const juce::String &message) {
+        std::fprintf(stderr, "standalone opengl sender smoke failed: %s\n", message.toRawUTF8());
+        std::fflush(stderr);
+        finish(1);
+    }
+
+    void finish(int code) {
+        if(finished_.exchange(true)) return;
+        result_code_.store(code);
+        juce::MessageManager::callAsync([code]() {
+            if(auto *application = juce::JUCEApplicationBase::getInstance()) {
+                application->setApplicationReturnValue(code);
+                application->quit();
+            }
+        });
+    }
+
+    smoke_sender_options options_;
+    juce::OpenGLContext context_;
+    juce::OpenGLFrameBuffer frame_buffer_;
+    NozzleSender *sender_{nullptr};
+    uint32_t published_frames_{0};
+    std::atomic<bool> finished_{false};
+    std::atomic<int> result_code_{1};
+};
+
+class opengl_smoke_window final : public juce::DocumentWindow {
+public:
+    explicit opengl_smoke_window(smoke_sender_options options)
+    : juce::DocumentWindow("Nozzle OpenGL Sender Smoke", juce::Colours::black, 0)
+    {
+        setUsingNativeTitleBar(true);
+        setContentOwned(new opengl_smoke_component(std::move(options)), true);
+        centreWithSize(getWidth(), getHeight());
+        setVisible(true);
+    }
+
+    void closeButtonPressed() override {
+        juce::JUCEApplication::getInstance()->systemRequestedQuit();
+    }
+};
 
 class sender_component final : public juce::Component, private juce::Timer {
 public:
@@ -208,6 +408,10 @@ public:
 
     void initialise(const juce::String &command_line) override {
         const smoke_sender_options smoke_options = parse_smoke_sender_options(command_line);
+        if(smoke_options.enabled && smoke_options.opengl_enabled) {
+            opengl_smoke_window_ = std::make_unique<opengl_smoke_window>(smoke_options);
+            return;
+        }
         if(smoke_options.enabled) {
             setApplicationReturnValue(run_smoke_sender(smoke_options));
             quit();
@@ -217,6 +421,7 @@ public:
     }
 
     void shutdown() override {
+        opengl_smoke_window_.reset();
         main_window_.reset();
     }
 
@@ -242,6 +447,7 @@ private:
     };
 
     std::unique_ptr<main_window> main_window_;
+    std::unique_ptr<opengl_smoke_window> opengl_smoke_window_;
 };
 
 START_JUCE_APPLICATION(sender_application)

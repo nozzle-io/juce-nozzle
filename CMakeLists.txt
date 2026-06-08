@@ -123,6 +123,7 @@ if(JUCE_NOZZLE_BUILD_EXAMPLES)
     target_link_libraries(NozzleSenderStandalone PRIVATE
         juce_nozzle_juce_policy
         juce::juce_gui_extra
+        juce::juce_opengl
     )
     target_compile_options(NozzleSenderStandalone PRIVATE
         $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wall -Wextra -Wpedantic>
