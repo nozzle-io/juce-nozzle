@@ -1,6 +1,6 @@
 # Standalone smoke procedure
 
-This document separates runtime evidence from build/package evidence. The CI `NozzleStandaloneSmoke` target proves an in-process CPU writable-frame sender/receiver baseline for fixed test sizes; it does not prove separate GUI app interop, DAW/plugin-host behavior, or a JUCE GPU/native texture path.
+This document separates runtime evidence from build/package evidence. CI runs both the in-process `NozzleStandaloneSmoke` helper baseline and a separate-process standalone app smoke using the built sender/receiver app binaries. These tests do not prove DAW/plugin-host behavior or a JUCE GPU/native texture path.
 
 ## Current standalone targets
 
@@ -26,9 +26,13 @@ Both standalone examples run nozzle work from the JUCE message-thread timer. The
 - bottom-left blue;
 - bottom-right white.
 
-This catches the basic no-flip and no-R/B-swap failure modes for the CPU writable-frame path. It is not a replacement for the separate-process GUI smoke matrix below.
+This catches the basic no-flip and no-R/B-swap failure modes for the CPU writable-frame path.
 
-## Required manual runtime evidence before claiming GUI/app support
+`python3 scripts/standalone-app-smoke.py --build-dir build` also runs in CI. It launches the built `Nozzle Sender Standalone` and `Nozzle Receiver Standalone` binaries as separate processes for `320x240` and `641x479`, then verifies the same corner colors through the receiver app smoke mode.
+
+This still does not prove a human-visible GUI session, `nozzle-viewer` interop, `nozzle-tester` interop, DAW/plugin-host behavior, or a JUCE GPU/native texture path.
+
+## Required manual runtime evidence before claiming broader GUI/app support
 
 Record the following for each platform/backend tested:
 
@@ -52,6 +56,6 @@ Record the following for each platform/backend tested:
 - `Nozzle Sender Standalone` -> `nozzle-viewer`, `641x479`.
 - `nozzle-tester` sender -> `Nozzle Receiver Standalone`, `320x240`.
 - `nozzle-tester` sender -> `Nozzle Receiver Standalone`, `641x479`.
-- `Nozzle Sender Standalone` -> `Nozzle Receiver Standalone`, both sizes.
+- `Nozzle Sender Standalone` -> `Nozzle Receiver Standalone`, both sizes. This is covered by CI headless app smoke; add screenshots/manual logs before making a GUI-visible support claim.
 
 Plugin-host smoke is separate. A standalone pass does not imply DAW/VST3/AU host support.

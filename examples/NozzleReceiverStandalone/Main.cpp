@@ -1,7 +1,105 @@
 #include <JuceHeader.h>
 #include <juce_nozzle/juce_nozzle_receiver.hpp>
 
+#include <cstdio>
+#include <string>
+
 namespace {
+
+struct smoke_receiver_options {
+    bool enabled{false};
+    std::string source_name{"juce_nozzle_app_smoke"};
+    uint32_t width{320};
+    uint32_t height{240};
+    uint32_t timeout_ms{10000};
+};
+
+uint32_t parse_uint_option(const juce::StringArray &tokens, const juce::String &name, uint32_t fallback) {
+    const int index = tokens.indexOf(name);
+    if(index < 0 || tokens.size() <= index + 1) return fallback;
+    const int value = tokens[index + 1].getIntValue();
+    if(value <= 0) return fallback;
+    return (uint32_t)value;
+}
+
+juce::String parse_string_option(const juce::StringArray &tokens, const juce::String &name, const juce::String &fallback) {
+    const int index = tokens.indexOf(name);
+    if(index < 0 || tokens.size() <= index + 1) return fallback;
+    const juce::String value = tokens[index + 1].trim();
+    return value.isEmpty() ? fallback : value;
+}
+
+smoke_receiver_options parse_smoke_receiver_options(const juce::String &command_line) {
+    smoke_receiver_options options;
+    const juce::StringArray tokens = juce::StringArray::fromTokens(command_line, true);
+    options.enabled = tokens.contains("--smoke-receiver");
+    if(!options.enabled) return options;
+    options.source_name = parse_string_option(tokens, "--source", "juce_nozzle_app_smoke").toStdString();
+    options.width = parse_uint_option(tokens, "--width", 320u);
+    options.height = parse_uint_option(tokens, "--height", 240u);
+    options.timeout_ms = parse_uint_option(tokens, "--timeout-ms", 10000u);
+    return options;
+}
+
+bool expect_pixel(const juce_nozzle::receiver_frame &frame, uint32_t x, uint32_t y, uint8_t red, uint8_t green, uint8_t blue) {
+    if(frame.width <= x || frame.height <= y) return false;
+    const size_t offset = ((size_t)y * frame.width + x) * 4u;
+    const uint8_t actual_red = frame.rgba8[offset + 0u];
+    const uint8_t actual_green = frame.rgba8[offset + 1u];
+    const uint8_t actual_blue = frame.rgba8[offset + 2u];
+    if(actual_red == red && actual_green == green && actual_blue == blue) return true;
+    std::fprintf(stderr, "standalone app receiver smoke pixel mismatch at %u,%u: got rgb(%u,%u,%u), expected rgb(%u,%u,%u)\n", x, y, actual_red, actual_green, actual_blue, red, green, blue);
+    return false;
+}
+
+bool verify_corners(const juce_nozzle::receiver_frame &frame) {
+    bool ok = true;
+    ok = expect_pixel(frame, 0u, 0u, 255u, 0u, 0u) && ok;
+    ok = expect_pixel(frame, frame.width - 1u, 0u, 0u, 255u, 0u) && ok;
+    ok = expect_pixel(frame, 0u, frame.height - 1u, 0u, 0u, 255u) && ok;
+    ok = expect_pixel(frame, frame.width - 1u, frame.height - 1u, 255u, 255u, 255u) && ok;
+    return ok;
+}
+
+int run_smoke_receiver(const smoke_receiver_options &options) {
+    const uint32_t poll_ms = 100u;
+    uint32_t waited_ms = 0u;
+    juce_nozzle::receiver_client receiver;
+
+    while(!receiver.is_connected() && waited_ms < options.timeout_ms) {
+        if(receiver.connect(options.source_name, "juce-nozzle receiver standalone smoke")) break;
+        juce::Thread::sleep((int)poll_ms);
+        waited_ms += poll_ms;
+    }
+
+    if(!receiver.is_connected()) {
+        std::fprintf(stderr, "standalone app receiver smoke connect timed out after %u ms: %s\n", options.timeout_ms, receiver.last_error().c_str());
+        return 1;
+    }
+
+    while(waited_ms < options.timeout_ms) {
+        const juce_nozzle::receiver_poll_result result = receiver.poll(poll_ms);
+        waited_ms += poll_ms;
+        if(result.has_frame) {
+            if(result.frame.width != options.width || result.frame.height != options.height) {
+                std::fprintf(stderr, "standalone app receiver smoke size mismatch: got %ux%u expected %ux%u\n", result.frame.width, result.frame.height, options.width, options.height);
+                return 1;
+            }
+            if(!verify_corners(result.frame)) return 1;
+            std::printf(
+                "standalone app receiver smoke PASS %ux%u frame=%llu source=%s\n",
+                result.frame.width,
+                result.frame.height,
+                (unsigned long long)result.frame.frame_index,
+                options.source_name.c_str()
+            );
+            return 0;
+        }
+    }
+
+    std::fprintf(stderr, "standalone app receiver smoke timed out after %u ms: %s\n", options.timeout_ms, receiver.last_error().c_str());
+    return 1;
+}
 
 juce::Image rgba8_to_image(const juce_nozzle::receiver_frame &frame) {
     juce::Image image(juce::Image::ARGB, (int)frame.width, (int)frame.height, true);
@@ -140,7 +238,12 @@ public:
     bool moreThanOneInstanceAllowed() override { return true; }
 
     void initialise(const juce::String &command_line) override {
-        juce::ignoreUnused(command_line);
+        const smoke_receiver_options smoke_options = parse_smoke_receiver_options(command_line);
+        if(smoke_options.enabled) {
+            setApplicationReturnValue(run_smoke_receiver(smoke_options));
+            quit();
+            return;
+        }
         main_window_ = std::make_unique<main_window>(getApplicationName());
     }
 

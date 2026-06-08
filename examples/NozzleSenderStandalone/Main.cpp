@@ -1,6 +1,80 @@
 #include <JuceHeader.h>
 #include <juce_nozzle/juce_nozzle_sender.hpp>
 
+#include <cstdio>
+#include <string>
+
+namespace {
+
+struct smoke_sender_options {
+    bool enabled{false};
+    std::string source_name{"juce_nozzle_app_smoke"};
+    uint32_t width{320};
+    uint32_t height{240};
+    uint32_t frames{240};
+    uint32_t interval_ms{16};
+};
+
+uint32_t parse_uint_option(const juce::StringArray &tokens, const juce::String &name, uint32_t fallback) {
+    const int index = tokens.indexOf(name);
+    if(index < 0 || tokens.size() <= index + 1) return fallback;
+    const int value = tokens[index + 1].getIntValue();
+    if(value <= 0) return fallback;
+    return (uint32_t)value;
+}
+
+juce::String parse_string_option(const juce::StringArray &tokens, const juce::String &name, const juce::String &fallback) {
+    const int index = tokens.indexOf(name);
+    if(index < 0 || tokens.size() <= index + 1) return fallback;
+    const juce::String value = tokens[index + 1].trim();
+    return value.isEmpty() ? fallback : value;
+}
+
+smoke_sender_options parse_smoke_sender_options(const juce::String &command_line) {
+    smoke_sender_options options;
+    const juce::StringArray tokens = juce::StringArray::fromTokens(command_line, true);
+    options.enabled = tokens.contains("--smoke-sender");
+    if(!options.enabled) return options;
+    options.source_name = parse_string_option(tokens, "--source", "juce_nozzle_app_smoke").toStdString();
+    options.width = parse_uint_option(tokens, "--width", 320u);
+    options.height = parse_uint_option(tokens, "--height", 240u);
+    options.frames = parse_uint_option(tokens, "--frames", 240u);
+    options.interval_ms = parse_uint_option(tokens, "--interval-ms", 16u);
+    return options;
+}
+
+int run_smoke_sender(const smoke_sender_options &options) {
+    juce_nozzle::sender_client sender;
+    if(!sender.connect(options.source_name, "juce-nozzle sender standalone smoke")) {
+        std::fprintf(stderr, "standalone app sender smoke connect failed: %s\n", sender.last_error().c_str());
+        return 1;
+    }
+
+    for(uint32_t frame = 0; frame < options.frames; frame++) {
+        const juce_nozzle::sender_publish_result result = sender.publish_test_pattern(options.width, options.height);
+        if(!result.published) {
+            std::fprintf(stderr, "standalone app sender smoke publish failed: %s\n", result.status.c_str());
+            return 1;
+        }
+        if(frame == 0 || frame + 1u == options.frames) {
+            std::printf(
+                "standalone app sender smoke published %ux%u frame=%llu source=%s\n",
+                options.width,
+                options.height,
+                (unsigned long long)result.frame_index,
+                options.source_name.c_str()
+            );
+            std::fflush(stdout);
+        }
+        juce::Thread::sleep((int)options.interval_ms);
+    }
+
+    sender.disconnect();
+    return 0;
+}
+
+} // namespace
+
 class sender_component final : public juce::Component, private juce::Timer {
 public:
     sender_component() {
@@ -131,7 +205,12 @@ public:
     bool moreThanOneInstanceAllowed() override { return true; }
 
     void initialise(const juce::String &command_line) override {
-        juce::ignoreUnused(command_line);
+        const smoke_sender_options smoke_options = parse_smoke_sender_options(command_line);
+        if(smoke_options.enabled) {
+            setApplicationReturnValue(run_smoke_sender(smoke_options));
+            quit();
+            return;
+        }
         main_window_ = std::make_unique<main_window>(getApplicationName());
     }
 

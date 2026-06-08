@@ -53,7 +53,7 @@ This is still an experimental plugin-host sample. Host-specific smoke is require
 
 ## Release packages
 
-CI builds the examples, runs the in-process `NozzleStandaloneSmoke` CPU writable-frame sender/receiver baseline, and publishes moving `latest` packages from `main`:
+CI builds the examples, runs both the in-process `NozzleStandaloneSmoke` baseline and a separate-process standalone sender/receiver app smoke, and publishes moving `latest` packages from `main`:
 
 ```text
 juce-nozzle-latest-<short_sha>-macos-universal.zip

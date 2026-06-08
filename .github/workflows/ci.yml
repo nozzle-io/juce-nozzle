@@ -67,6 +67,10 @@ jobs:
           fi
           "$smoke_executable"
 
+      - name: Run standalone app interop smoke
+        shell: bash
+        run: python3 scripts/standalone-app-smoke.py --build-dir build
+
       - name: Verify macOS universal plugin binaries
         if: runner.os == 'macOS'
         shell: bash
