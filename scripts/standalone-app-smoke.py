@@ -35,16 +35,34 @@ def git_sha(repo_dir: Path) -> str:
         return "unknown"
 
 
+def require_git_sha(repo_dir: Path, label: str) -> None:
+    sha = git_sha(repo_dir)
+    if sha == "unknown":
+        raise SystemExit(f"missing {label} git repo: {repo_dir}")
+
+
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
 
 def run_process(args: list[str], timeout: int, stdout_path: Path, stderr_path: Path) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-    write_text(stdout_path, completed.stdout)
-    write_text(stderr_path, completed.stderr)
-    return completed
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+        write_text(stdout_path, stdout)
+        write_text(stderr_path, stderr)
+        raise SystemExit(f"process timed out after {timeout}s: {' '.join(args)}\nstdout:\n{stdout}\nstderr:\n{stderr}")
+    write_text(stdout_path, stdout)
+    write_text(stderr_path, stderr)
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 
 
 def wait_sender(sender: subprocess.Popen[str], stdout_path: Path, stderr_path: Path, label: str) -> None:
@@ -99,7 +117,7 @@ def run_juce_pair(sender_executable: Path, receiver_executable: Path, width: int
         "--source", source,
         "--width", str(width),
         "--height", str(height),
-        "--frames", "90",
+        "--frames", "180",
         "--interval-ms", "16",
     ]
     receiver_args = [
@@ -140,7 +158,7 @@ def run_sender_to_viewer(sender_executable: Path, viewer_executable: Path, width
         "--source", source,
         "--width", str(width),
         "--height", str(height),
-        "--frames", "120",
+        "--frames", "240",
         "--interval-ms", "16",
     ]
     viewer_args = [
@@ -180,9 +198,9 @@ def run_tester_to_receiver(tester_executable: Path, receiver_executable: Path, w
         "--width", str(width),
         "--height", str(height),
         "--format", "rgba8_unorm",
-        "--frames", "120",
+        "--frames", "240",
         "--delay-ms", "16",
-        "--hold-ms", "500",
+        "--hold-ms", "1000",
         "--sender-pattern", "juce-quadrants",
         "--evidence", str(sender_evidence_path),
     ]
@@ -211,10 +229,12 @@ def run_tester_to_receiver(tester_executable: Path, receiver_executable: Path, w
     require_pass(receiver_evidence_path, label)
 
 
-def write_summary(evidence_dir: Path, repo_root: Path, juce_nozzle_dir: Path, viewer_dir: Optional[Path], tester_dir: Optional[Path]) -> None:
+def write_summary(evidence_dir: Path, repo_root: Path, juce_nozzle_dir: Path, viewer_dir: Optional[Path], tester_dir: Optional[Path], verdict: str, failure_reason: str = "") -> None:
     summary = {
         "schema_version": "0.1.0",
         "tool": "juce-nozzle standalone-app-smoke",
+        "verdict": verdict,
+        "failure_reason": failure_reason,
         "os": platform.platform(),
         "python": sys.version,
         "repo_shas": {
@@ -256,22 +276,35 @@ def main() -> int:
     tester = Path(args.nozzle_tester_cli) if args.nozzle_tester_cli else None
     viewer_dir = Path(args.viewer_repo_dir) if args.viewer_repo_dir else None
     tester_dir = Path(args.tester_repo_dir) if args.tester_repo_dir else None
-    if args.require_external and (viewer is None or tester is None):
-        raise SystemExit("--require-external requires --viewer-executable and --nozzle-tester-cli")
-    if viewer is not None:
-        require_existing_executable(viewer, "nozzle-viewer")
-    if tester is not None:
-        require_existing_executable(tester, "nozzle-tester-cli")
-
-    for width, height in SIZES:
-        if not args.skip_juce_pair:
-            run_juce_pair(sender, receiver, width, height, evidence_dir)
+    exit_code = 0
+    failure_reason = ""
+    try:
+        if args.require_external and (viewer is None or tester is None or viewer_dir is None or tester_dir is None):
+            raise SystemExit("--require-external requires --viewer-executable, --nozzle-tester-cli, --viewer-repo-dir, and --tester-repo-dir")
         if viewer is not None:
-            run_sender_to_viewer(sender, viewer, width, height, evidence_dir)
+            require_existing_executable(viewer, "nozzle-viewer")
         if tester is not None:
-            run_tester_to_receiver(tester, receiver, width, height, evidence_dir)
+            require_existing_executable(tester, "nozzle-tester-cli")
+        if args.require_external:
+            require_git_sha(viewer_dir, "nozzle-viewer")
+            require_git_sha(tester_dir, "nozzle-tester")
 
-    write_summary(evidence_dir, repo_root, repo_root, viewer_dir, tester_dir)
+        for width, height in SIZES:
+            if not args.skip_juce_pair:
+                run_juce_pair(sender, receiver, width, height, evidence_dir)
+            if viewer is not None:
+                run_sender_to_viewer(sender, viewer, width, height, evidence_dir)
+            if tester is not None:
+                run_tester_to_receiver(tester, receiver, width, height, evidence_dir)
+    except SystemExit as error:
+        exit_code = error.code if isinstance(error.code, int) else 1
+        failure_reason = str(error)
+    finally:
+        write_summary(evidence_dir, repo_root, repo_root, viewer_dir, tester_dir, "PASS" if exit_code == 0 else "FAIL", failure_reason)
+
+    if exit_code != 0:
+        print(f"standalone app smoke FAIL evidence_dir={evidence_dir} reason={failure_reason}", file=sys.stderr)
+        raise SystemExit(exit_code)
     print(f"standalone app smoke PASS evidence_dir={evidence_dir}")
     return 0
 

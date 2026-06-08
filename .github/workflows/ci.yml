@@ -195,10 +195,12 @@ jobs:
         run: python3 scripts/standalone-app-smoke.py --build-dir build --evidence-dir build/standalone-app-smoke-evidence
 
       - name: Upload standalone app smoke evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: standalone-app-smoke-evidence-${{ matrix.platform }}
           path: build/standalone-app-smoke-evidence
+          if-no-files-found: warn
 
       - name: Verify macOS universal plugin binaries
         if: runner.os == 'macOS'
