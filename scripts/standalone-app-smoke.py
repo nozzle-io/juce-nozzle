@@ -84,6 +84,11 @@ def require_pass(evidence_path: Path, label: str) -> None:
         raise SystemExit(f"{label} evidence failed: verdict={verdict} failed_checks={failures} path={evidence_path}")
 
 
+def require_existing_executable(path: Path, label: str) -> None:
+    if not path.is_file():
+        raise SystemExit(f"missing {label} executable: {path}")
+
+
 def run_juce_pair(sender_executable: Path, receiver_executable: Path, width: int, height: int, evidence_dir: Path) -> None:
     source = f"juce_nozzle_app_smoke_{width}x{height}_{int(time.time() * 1000)}"
     label = f"juce_sender_to_juce_receiver_{width}x{height}"
@@ -217,6 +222,7 @@ def write_summary(evidence_dir: Path, repo_root: Path, juce_nozzle_dir: Path, vi
             "nozzle": git_sha(juce_nozzle_dir / "nozzle"),
         },
         "evidence_files": sorted(path.name for path in evidence_dir.glob("*.json") if path.name != "summary.json"),
+        "log_files": sorted(path.name for path in evidence_dir.glob("*.log")),
     }
     if viewer_dir is not None:
         summary["repo_shas"]["nozzle-viewer"] = git_sha(viewer_dir)
@@ -234,6 +240,7 @@ def main() -> int:
     parser.add_argument("--viewer-repo-dir", default=None)
     parser.add_argument("--tester-repo-dir", default=None)
     parser.add_argument("--skip-juce-pair", action="store_true")
+    parser.add_argument("--require-external", action="store_true", help="Fail unless both nozzle-viewer and nozzle-tester executables are provided.")
     args = parser.parse_args()
 
     build_dir = Path(args.build_dir)
@@ -249,6 +256,12 @@ def main() -> int:
     tester = Path(args.nozzle_tester_cli) if args.nozzle_tester_cli else None
     viewer_dir = Path(args.viewer_repo_dir) if args.viewer_repo_dir else None
     tester_dir = Path(args.tester_repo_dir) if args.tester_repo_dir else None
+    if args.require_external and (viewer is None or tester is None):
+        raise SystemExit("--require-external requires --viewer-executable and --nozzle-tester-cli")
+    if viewer is not None:
+        require_existing_executable(viewer, "nozzle-viewer")
+    if tester is not None:
+        require_existing_executable(tester, "nozzle-tester-cli")
 
     for width, height in SIZES:
         if not args.skip_juce_pair:

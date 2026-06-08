@@ -30,7 +30,34 @@ This catches the basic no-flip and no-R/B-swap failure modes for the CPU writabl
 
 `python3 scripts/standalone-app-smoke.py --build-dir build` also runs in CI. It launches the built `Nozzle Sender Standalone` and `Nozzle Receiver Standalone` binaries as separate processes for `320x240` and `641x479`, then verifies the same corner colors through the receiver app smoke mode.
 
-This still does not prove a human-visible GUI session, `nozzle-viewer` interop, `nozzle-tester` interop, DAW/plugin-host behavior, or a JUCE GPU/native texture path.
+This default CI command still does not prove a human-visible GUI session, `nozzle-viewer` interop, `nozzle-tester` interop, DAW/plugin-host behavior, or a JUCE GPU/native texture path.
+
+## External app interop smoke
+
+For issue-level evidence that includes external apps, run the same harness with explicit external executables and `--require-external`:
+
+```sh
+python3 scripts/standalone-app-smoke.py \
+  --build-dir build \
+  --viewer-executable ../nozzle-viewer/build/nozzle-viewer.app/Contents/MacOS/nozzle-viewer \
+  --nozzle-tester-cli ../nozzle-tester/build/nozzle-tester-cli \
+  --viewer-repo-dir ../nozzle-viewer \
+  --tester-repo-dir ../nozzle-tester \
+  --evidence-dir build/standalone-app-smoke-evidence \
+  --require-external
+```
+
+On Windows, pass the corresponding `.exe` paths. On Linux, pass the built ELF executable paths.
+
+The external mode records JSON evidence and stdout/stderr logs under `--evidence-dir`, including:
+
+- `Nozzle Sender Standalone` -> `nozzle-viewer` at `320x240` and `641x479`;
+- `nozzle-tester sender --sender-pattern juce-quadrants` -> `Nozzle Receiver Standalone` at `320x240` and `641x479`;
+- the baseline `Nozzle Sender Standalone` -> `Nozzle Receiver Standalone` at both sizes unless `--skip-juce-pair` is used.
+
+`--sender-pattern juce-quadrants` is a JUCE-compatible smoke fixture for the required quadrant semantics. It is not evidence that the canonical nozzle-tester gradient/marker oracle is accepted by the JUCE receiver.
+
+If the external command fails, report that failure as the evidence. Do not substitute the default CI smoke pass for external-app interop.
 
 ## Required manual runtime evidence before claiming broader GUI/app support
 
