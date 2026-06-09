@@ -102,6 +102,20 @@ def require_pass(evidence_path: Path, label: str) -> None:
         raise SystemExit(f"{label} evidence failed: verdict={verdict} failed_checks={failures} path={evidence_path}")
 
 
+def require_format_metadata(evidence_path: Path, label: str, expected_storage: str, expected_semantic: str, expected_copied: str) -> None:
+    evidence = load_evidence(evidence_path)
+    formats = evidence.get("formats", {})
+    failures = []
+    if formats.get("storage") != expected_storage:
+        failures.append(f"storage={formats.get('storage')} expected={expected_storage}")
+    if formats.get("semantic") != expected_semantic:
+        failures.append(f"semantic={formats.get('semantic')} expected={expected_semantic}")
+    if formats.get("copied") != expected_copied:
+        failures.append(f"copied={formats.get('copied')} expected={expected_copied}")
+    if failures:
+        raise SystemExit(f"{label} format metadata failed: {', '.join(failures)} path={evidence_path}")
+
+
 def require_existing_executable(path: Path, label: str) -> None:
     if not path.is_file():
         raise SystemExit(f"missing {label} executable: {path}")
@@ -148,6 +162,51 @@ def run_juce_pair(sender_executable: Path, receiver_executable: Path, width: int
     require_pass(evidence_path, label)
 
 
+def run_opengl_sender_to_juce_receiver(sender_executable: Path, receiver_executable: Path, width: int, height: int, evidence_dir: Path) -> None:
+    if sys.platform != "darwin":
+        raise SystemExit("OpenGL sender smoke is currently supported only on macOS CI; do not mark non-macOS as covered")
+
+    source = f"juce_nozzle_opengl_smoke_{width}x{height}_{int(time.time() * 1000)}"
+    label = f"opengl_sender_to_juce_receiver_{width}x{height}"
+    evidence_path = evidence_dir / f"{label}.json"
+    sender_args = [
+        str(sender_executable),
+        "--smoke-opengl-sender",
+        "--source", source,
+        "--width", str(width),
+        "--height", str(height),
+        "--frames", "240",
+        "--interval-ms", "16",
+    ]
+    receiver_args = [
+        str(receiver_executable),
+        "--smoke-receiver",
+        "--source", source,
+        "--width", str(width),
+        "--height", str(height),
+        "--timeout-ms", "15000",
+        "--evidence", str(evidence_path),
+    ]
+
+    sender = subprocess.Popen(sender_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        time.sleep(0.8)
+        receiver = run_process(receiver_args, 20, evidence_dir / f"{label}.receiver.stdout.log", evidence_dir / f"{label}.receiver.stderr.log")
+        wait_sender(sender, evidence_dir / f"{label}.sender.stdout.log", evidence_dir / f"{label}.sender.stderr.log", label)
+    finally:
+        if sender.poll() is None:
+            sender.terminate()
+            sender.communicate(timeout=5)
+
+    print(receiver.stdout, end="")
+    print(receiver.stderr, end="", file=sys.stderr)
+
+    if receiver.returncode != 0:
+        raise SystemExit(f"{label} receiver exited {receiver.returncode}")
+    require_pass(evidence_path, label)
+    require_format_metadata(evidence_path, label, "bgra8_unorm", "rgba8_unorm", "bgra8_unorm")
+
+
 def run_sender_to_viewer(sender_executable: Path, viewer_executable: Path, width: int, height: int, evidence_dir: Path) -> None:
     source = f"juce_nozzle_viewer_smoke_{width}x{height}_{int(time.time() * 1000)}"
     label = f"juce_sender_to_nozzle_viewer_{width}x{height}"
@@ -173,6 +232,47 @@ def run_sender_to_viewer(sender_executable: Path, viewer_executable: Path, width
     sender = subprocess.Popen(sender_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         time.sleep(0.25)
+        viewer = run_process(viewer_args, 20, evidence_dir / f"{label}.receiver.stdout.log", evidence_dir / f"{label}.receiver.stderr.log")
+        wait_sender(sender, evidence_dir / f"{label}.sender.stdout.log", evidence_dir / f"{label}.sender.stderr.log", label)
+    finally:
+        if sender.poll() is None:
+            sender.terminate()
+            sender.communicate(timeout=5)
+    print(viewer.stdout, end="")
+    print(viewer.stderr, end="", file=sys.stderr)
+    if viewer.returncode != 0:
+        raise SystemExit(f"{label} receiver exited {viewer.returncode}")
+    require_pass(evidence_path, label)
+
+
+def run_opengl_sender_to_viewer(sender_executable: Path, viewer_executable: Path, width: int, height: int, evidence_dir: Path) -> None:
+    if sys.platform != "darwin":
+        raise SystemExit("OpenGL sender smoke is currently supported only on macOS CI; do not mark non-macOS as covered")
+
+    source = f"juce_nozzle_opengl_viewer_smoke_{width}x{height}_{int(time.time() * 1000)}"
+    label = f"opengl_sender_to_nozzle_viewer_{width}x{height}"
+    evidence_path = evidence_dir / f"{label}.json"
+    sender_args = [
+        str(sender_executable),
+        "--smoke-opengl-sender",
+        "--source", source,
+        "--width", str(width),
+        "--height", str(height),
+        "--frames", "240",
+        "--interval-ms", "16",
+    ]
+    viewer_args = [
+        str(viewer_executable),
+        "--smoke-receiver",
+        "--source", source,
+        "--width", str(width),
+        "--height", str(height),
+        "--timeout-ms", "15000",
+        "--evidence", str(evidence_path),
+    ]
+    sender = subprocess.Popen(sender_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        time.sleep(0.8)
         viewer = run_process(viewer_args, 20, evidence_dir / f"{label}.receiver.stdout.log", evidence_dir / f"{label}.receiver.stderr.log")
         wait_sender(sender, evidence_dir / f"{label}.sender.stdout.log", evidence_dir / f"{label}.sender.stderr.log", label)
     finally:
@@ -260,6 +360,7 @@ def main() -> int:
     parser.add_argument("--viewer-repo-dir", default=None)
     parser.add_argument("--tester-repo-dir", default=None)
     parser.add_argument("--skip-juce-pair", action="store_true")
+    parser.add_argument("--include-opengl-sender", action="store_true", help="Run macOS OpenGL sender smoke against the JUCE receiver, and nozzle-viewer when supplied.")
     parser.add_argument("--require-external", action="store_true", help="Fail unless both nozzle-viewer and nozzle-tester executables are provided.")
     args = parser.parse_args()
 
@@ -292,8 +393,12 @@ def main() -> int:
         for width, height in SIZES:
             if not args.skip_juce_pair:
                 run_juce_pair(sender, receiver, width, height, evidence_dir)
+            if args.include_opengl_sender:
+                run_opengl_sender_to_juce_receiver(sender, receiver, width, height, evidence_dir)
             if viewer is not None:
                 run_sender_to_viewer(sender, viewer, width, height, evidence_dir)
+                if args.include_opengl_sender:
+                    run_opengl_sender_to_viewer(sender, viewer, width, height, evidence_dir)
             if tester is not None:
                 run_tester_to_receiver(tester, receiver, width, height, evidence_dir)
     except SystemExit as error:

@@ -32,6 +32,18 @@ This catches the basic no-flip and no-R/B-swap failure modes for the CPU writabl
 
 This default CI command still does not prove a human-visible GUI session, `nozzle-viewer` interop, `nozzle-tester` interop, DAW/plugin-host behavior, or a JUCE GPU/native texture path.
 
+On macOS CI, a second smoke invocation covers the OpenGL sender path:
+
+```sh
+python3 scripts/standalone-app-smoke.py \
+  --build-dir build \
+  --evidence-dir build/opengl-standalone-app-smoke-evidence \
+  --skip-juce-pair \
+  --include-opengl-sender
+```
+
+This launches `Nozzle Sender Standalone --smoke-opengl-sender` and `Nozzle Receiver Standalone --smoke-receiver` for `320x240` and `641x479`. The receiver evidence must pass the strict corner oracle and must record macOS CGL/IOSurface metadata as storage `bgra8_unorm`, semantic `rgba8_unorm`, and copied format `bgra8_unorm`. The OpenGL smoke is macOS-only; Windows/Linux are not silently counted as covered.
+
 ## External app interop smoke
 
 For issue-level evidence that includes external apps, run the same harness with explicit external executables and `--require-external`:

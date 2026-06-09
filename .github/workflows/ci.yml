@@ -202,6 +202,19 @@ jobs:
           path: build/standalone-app-smoke-evidence
           if-no-files-found: warn
 
+      - name: Run macOS OpenGL standalone app smoke
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python3 scripts/standalone-app-smoke.py --build-dir build --evidence-dir build/opengl-standalone-app-smoke-evidence --skip-juce-pair --include-opengl-sender
+
+      - name: Upload macOS OpenGL standalone app smoke evidence
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: opengl-standalone-app-smoke-evidence-${{ matrix.platform }}
+          path: build/opengl-standalone-app-smoke-evidence
+          if-no-files-found: warn
+
       - name: Verify macOS universal plugin binaries
         if: runner.os == 'macOS'
         shell: bash
