@@ -37,6 +37,15 @@ On macOS the build produces standalone sender/receiver apps, a standalone plugin
 
 `Nozzle Receiver` can also be opened as the standalone plugin wrapper or as VST3/AU, but DAW/plugin-host runtime support requires separate host smoke evidence. See `docs/standalone-smoke.md` and `docs/plugin-host-boundary.md`.
 
+The sender app's `--smoke-sender` and `--smoke-opengl-sender` modes retry transient
+publication Timeout without counting dropped attempts toward `--frames`. Retries
+are paced by `--interval-ms` and bounded per next successful publication by
+`--timeout-ms` (positive milliseconds, default 5000). Successful publication and
+its normal pacing reset that budget. Other failures remain fatal; the budget
+cannot interrupt an individual native call. The CPU helper reports acquisition
+and commit backpressure through `sender_publish_result::retry_later`, not by
+matching diagnostic strings; pixel mapping/unlock failures remain fatal.
+
 The preview and diagnostics are intentionally simple. The point is to prove the receive path and thread boundary, not to build a polished host UI.
 
 ## Threading boundary

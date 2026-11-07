@@ -139,7 +139,7 @@ bool verify_frame_operations_reject_wrong_thread() {
     });
     publish_worker.join();
 
-    if(publish_result.published || !contains_text(publish_result.status, "sender publish rejected")) {
+    if(publish_result.published || publish_result.retry_later || !contains_text(publish_result.status, "sender publish rejected")) {
         std::fprintf(stderr, "sender publish wrong-thread rejection missing: %s\n", publish_result.status.c_str());
         sender.disconnect();
         return false;
