@@ -56,6 +56,11 @@ smoke_sender_options parse_smoke_sender_options(const juce::String &command_line
     return options;
 }
 
+bool busy_retry_expired(std::chrono::steady_clock::time_point progress_start,
+                        const smoke_sender_options &options) {
+    return std::chrono::steady_clock::now() - progress_start >= std::chrono::milliseconds(options.timeout_ms);
+}
+
 bool pace_busy_retry(std::chrono::steady_clock::time_point progress_start,
                      const smoke_sender_options &options) {
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -105,10 +110,18 @@ int run_smoke_sender(const smoke_sender_options &options) {
     }
 
     auto progress_start = std::chrono::steady_clock::now();
+    bool retry_pending = false;
     for(uint32_t frame = 0; frame < options.frames;) {
+        if(retry_pending && busy_retry_expired(progress_start, options)) {
+            std::fprintf(stderr, "standalone app sender smoke publication timeout\n");
+            return 1;
+        }
         const juce_nozzle::sender_publish_result result = sender.publish_test_pattern(options.width, options.height);
         if(!result.published) {
-            if(result.retry_later && pace_busy_retry(progress_start, options)) continue;
+            if(result.retry_later && pace_busy_retry(progress_start, options)) {
+                retry_pending = true;
+                continue;
+            }
             std::fprintf(stderr, "standalone app sender smoke publish failed: %s\n", result.status.c_str());
             return 1;
         }
@@ -123,6 +136,7 @@ int run_smoke_sender(const smoke_sender_options &options) {
             std::fflush(stdout);
         }
         frame += 1u;
+        retry_pending = false;
         juce::Thread::sleep((int)options.interval_ms);
         progress_start = std::chrono::steady_clock::now();
     }
@@ -178,6 +192,10 @@ private:
 
     void renderOpenGL() override {
         if(finished_.load() || sender_ == nullptr) return;
+        if(retry_pending_ && busy_retry_expired(progress_start_, options_)) {
+            fail("opengl publication timeout");
+            return;
+        }
         if(!frame_buffer_.isValid()) {
             if(!frame_buffer_.initialise(context_, (int)options_.width, (int)options_.height)) {
                 fail("opengl framebuffer initialise failed");
@@ -193,6 +211,11 @@ private:
         render_quadrants_for_nozzle_oracle();
         frame_buffer_.releaseAsRenderingTarget();
 
+        if(retry_pending_ && busy_retry_expired(progress_start_, options_)) {
+            fail("opengl publication timeout");
+            return;
+        }
+
         const NozzleErrorCode error = nozzle_sender_publish_gl_texture(
             sender_,
             (uint32_t)frame_buffer_.getTextureID(),
@@ -202,12 +225,16 @@ private:
             NOZZLE_FORMAT_RGBA8_UNORM
         );
         if(error != NOZZLE_OK) {
-            if(error == NOZZLE_ERROR_TIMEOUT && pace_busy_retry(progress_start_, options_)) return;
+            if(error == NOZZLE_ERROR_TIMEOUT && pace_busy_retry(progress_start_, options_)) {
+                retry_pending_ = true;
+                return;
+            }
             fail(juce::String("opengl publish failed: ") + nozzle_error_name(error));
             return;
         }
 
         const uint32_t frame = published_frames_++;
+        retry_pending_ = false;
         if(frame == 0u || frame + 1u == options_.frames) {
             std::printf(
                 "standalone opengl sender smoke published %ux%u frame=%u source=%s transfer_mode=%s\n",
@@ -277,6 +304,7 @@ private:
     juce::OpenGLFrameBuffer frame_buffer_;
     NozzleSender *sender_{nullptr};
     uint32_t published_frames_{0};
+    bool retry_pending_{false};
     std::chrono::steady_clock::time_point progress_start_{};
     std::atomic<bool> finished_{false};
     std::atomic<int> result_code_{1};
