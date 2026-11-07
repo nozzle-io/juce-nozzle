@@ -13,6 +13,8 @@ struct sender_publish_result {
     bool published{false};
     std::string status;
     uint64_t frame_index{0};
+    // Only acquire/commit Timeout permits a paced publication retry.
+    bool retry_later{false};
 };
 
 class sender_client {

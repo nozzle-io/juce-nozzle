@@ -246,6 +246,7 @@ sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32
     NozzleFrame *frame = nullptr;
     NozzleErrorCode error = nozzle_sender_acquire_writable_frame((NozzleSender *)sender_, width, height, NOZZLE_FORMAT_RGBA8_UNORM, &frame);
     if(error != NOZZLE_OK || frame == nullptr) {
+        result.retry_later = error == NOZZLE_ERROR_TIMEOUT;
         result.status = status_with_error("acquire_writable_frame failed", error);
         set_last_error(result.status);
         return result;
@@ -272,6 +273,7 @@ sender_publish_result sender_client::publish_test_pattern(uint32_t width, uint32
     error = nozzle_sender_commit_frame((NozzleSender *)sender_, frame);
     nozzle_frame_release(frame);
     if(error != NOZZLE_OK) {
+        result.retry_later = error == NOZZLE_ERROR_TIMEOUT;
         result.status = status_with_error("commit_frame failed", error);
         set_last_error(result.status);
         return result;
