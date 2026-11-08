@@ -250,8 +250,8 @@ receiver_poll_result receiver_client::poll(uint64_t timeout_ms) {
         convert_bgra_to_rgba(result.frame.rgba8);
     }
 
-    NozzleConnectedSenderInfo sender_info{};
-    const NozzleErrorCode connected_info_error = nozzle_receiver_get_connected_info((NozzleReceiver *)receiver_, &sender_info);
+    NozzleConnectedSenderSnapshot sender_info{};
+    const NozzleErrorCode connected_info_error = nozzle_receiver_get_connected_info_snapshot((NozzleReceiver *)receiver_, &sender_info);
     if(connected_info_error == NOZZLE_OK) {
         result.frame.estimated_fps = sender_info.estimated_fps;
     }
